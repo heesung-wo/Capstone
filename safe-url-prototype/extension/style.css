@@ -1,0 +1,13 @@
+body { font: 14px/1.45 system-ui, sans-serif; margin: 20px; color: #1c2735; background: #f5f7fa; }
+body.popup { width: 380px; margin: 14px; }
+main { max-width: 720px; margin: auto; background: white; border-radius: 12px; padding: 20px; box-shadow: 0 3px 18px #14213218; }
+h1 { font-size: 21px; margin: 0 0 14px; } h2 { font-size: 16px; }
+input { box-sizing: border-box; width: 100%; padding: 9px; border: 1px solid #aebccc; border-radius: 6px; }
+button { cursor: pointer; padding: 8px 12px; border: 0; border-radius: 6px; background: #185ca2; color: white; margin: 6px 4px 4px 0; }
+button.secondary { background: #566b80; } button.danger { background: #b1323d; }
+.panel { border-top: 1px solid #dce2e8; margin-top: 18px; padding-top: 10px; }
+.muted { color: #58687b; } .url { overflow-wrap: anywhere; }
+.MALICIOUS { color: #a41827; } .SUSPICIOUS { color: #a06000; } .UNKNOWN, .UNVERIFIED { color: #365c7e; }
+li { overflow-wrap: anywhere; margin-bottom: 4px; } ul { padding-left: 22px; }
+.list-row { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+.list-row button { padding: 4px 7px; }
