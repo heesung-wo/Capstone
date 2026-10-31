@@ -1,0 +1,10 @@
+{
+  "name": "safe-ur-link",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:feed": "node scripts/build-feed.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": { "node": ">=22" }
+}
