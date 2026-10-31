@@ -3,7 +3,9 @@ import * as db from '../core/db.js';
 import { FEEDS, REFRESH_MS, PHISHTANK_ANONYMOUS_MS } from '../core/feeds.js';
 
 const DEFAULTS = { authKey: '', phishKey: '', realtime: true, allow: [], block: [] };
-const MAX_FEED_RULES = 20000, USER_BASE = 100000;
+// Chrome DNR redirect 는 안전하지 않은 동적 규칙으로 분류되어 최대 5000개.
+// 사용자 차단 목록/브라우저 차이를 고려해 4800개로 제한한다.
+const MAX_REDIRECT_RULES = 4800, USER_BASE = 100000;
 const getSettings = async () => ({ ...DEFAULTS, ...(await chrome.storage.local.get(Object.keys(DEFAULTS))) });
 const warnUrl = u => chrome.runtime.getURL('pages/warning/warning.html') + '?u=' + encodeURIComponent(u);
 const main = { resourceTypes: ['main_frame'] };
@@ -44,7 +46,20 @@ function retryDelay(error) {
   const serverDelay = Number.isFinite(secs) && secs >= 0 ? secs * 1000
     : Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
   const isLimit = [429, 509].includes(error?.httpStatus);
-  return Math.max(60 * 60_000, serverDelay, isLimit ? 6 * 60 * 60_000 : 0);
+  const isAccessDenied = [401, 403].includes(error?.httpStatus);
+  // 같은 인증값으로 401/403을 매시간 재시도하지 않는다. 키가 바뀌면 즉시 재시도 가능.
+  return Math.max(60 * 60_000, serverDelay, isAccessDenied ? 24 * 60 * 60_000 : 0, isLimit ? 6 * 60 * 60_000 : 0);
+}
+
+function friendlyFeedError(name, error) {
+  const status = error?.httpStatus;
+  if (name === 'URLhaus' && status === 401) return 'HTTP 401 · abuse.ch Auth-Key 인증 실패: 키 발급/복사·유효성 확인 (재시도: 키 교체 시 즉시)';
+  if (name === 'ThreatFox' && status === 403) return 'HTTP 403 · 서버 접근 거부: 키 권한, API 정책 또는 IP/보안 차단 확인';
+  if (status === 401) return 'HTTP 401 · API 인증 실패: 입력한 키 확인';
+  if (status === 403) return 'HTTP 403 · API 접근 거부: 제공자 계정/권한 또는 보안 정책 확인';
+  if (name === 'PhishTank' && error?.code === 'NETWORK_ERROR')
+    return '네트워크 연결 실패 · 확장 프로그램에서 PhishTank 서버에 연결되지 않음 (개발자 도구 확인 / JSON 파일 수동 가져오기 가능)';
+  return String(error?.message || error);
 }
 
 async function performSync() {
@@ -84,8 +99,8 @@ async function performSync() {
       // 차단/호출 제한/네트워크 오류에도 마지막 정상 데이터는 남겨둔다.
       const delay = Math.max(interval, retryDelay(e));
       feedState[name] = { ...old, lastAttempt: began, credentialTag: tag,
-        nextAt: Date.now() + delay, lastError: String(e.message || e) };
-      results[name] = { ok: false, error: String(e.message || e), count: old.count || 0,
+        nextAt: Date.now() + delay, lastError: friendlyFeedError(name, e) };
+      results[name] = { ok: false, error: friendlyFeedError(name, e), count: old.count || 0,
         nextAt: feedState[name].nextAt };
     }
   }));
@@ -93,6 +108,23 @@ async function performSync() {
   if (changed) await rebuildRules();
   return results;
 }
+async function importComplete(source, count) {
+  if (source !== 'PhishTank' || !Number.isInteger(count) || count <= 0) throw new Error('올바르지 않은 가져오기 요청');
+  const s = await getSettings();
+  const tag = smallTag(s.phishKey || '');
+  const stored = await chrome.storage.local.get({ feedState: {}, syncStatus: {} });
+  const nextAt = Date.now() + (s.phishKey ? REFRESH_MS.PhishTank : PHISHTANK_ANONYMOUS_MS);
+  const state = { ...stored.feedState, PhishTank: {
+    lastSuccess: Date.now(), count, credentialTag: tag, nextAt, importMethod: 'file'
+  } };
+  const status = { time: Date.now(), results: {
+    ...stored.syncStatus.results, PhishTank: { ok: true, count, nextAt, imported: true }
+  } };
+  await chrome.storage.local.set({ feedState: state, syncStatus: status });
+  await rebuildRules();
+  return { success: true, count };
+}
+
 export function sync() {
   if (!runningSync) runningSync = performSync().finally(() => { runningSync = undefined; });
   return runningSync;
@@ -103,12 +135,13 @@ export async function rebuildRules() {
   const s = await getSettings();
   const old = (await chrome.declarativeNetRequest.getDynamicRules()).map(r => r.id);
   const add = [];
+  if (s.block.length > MAX_REDIRECT_RULES) throw new Error(`차단 목록이 허용 규칙 수(${MAX_REDIRECT_RULES})를 초과했습니다.`);
   if (s.realtime) {
     const groups = new Map();
     for (const r of await db.all()) (groups.get(r.url) || groups.set(r.url, []).get(r.url)).push(r);
     const urls = [...groups.entries()].filter(([u]) => !/[*^|]/.test(u))
       .sort((a, b) => new Set(b[1].map(x => x.source)).size - new Set(a[1].map(x => x.source)).size)
-      .slice(0, MAX_FEED_RULES).map(([u]) => u);
+      .slice(0, MAX_REDIRECT_RULES - s.block.length).map(([u]) => u);
     urls.forEach((u, i) => add.push({
       id: i + 1, priority: 1, action: { type: 'redirect', redirect: { url: warnUrl(u) } },
       condition: { urlFilter: `|${u}|`, isUrlFilterCaseSensitive: true, ...main }
@@ -152,6 +185,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     check: () => check(msg.url),
     sync: () => sync(),
     rebuild: () => rebuildRules(),
+    importComplete: () => importComplete(msg.source, msg.count),
     allowOnce: () => allowOnce(msg.url),
     goSafe: () => chrome.tabs.update(sender.tab.id, { url: 'chrome://newtab/' }),
     status: async () => ({ ...(await chrome.storage.local.get(['syncStatus', 'ruleCount'])), counts: await db.countBySource() })
