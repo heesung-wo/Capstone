@@ -47,9 +47,8 @@ jobs:
           PUBLISH_URLHAUS: 'true'
           PUBLISH_THREATFOX: 'true'
           PUBLISH_PHISHTANK: 'true'
-          PUBLISH_OPENPHISH: 'true'
+          PUBLISH_PHISHING_DB: 'true'
           REDISTRIBUTION_CONFIRMED: 'true'
-          OPENPHISH_WRITTEN_PERMISSION: 'false'
         run: npm run build:feed
 
       - uses: actions/configure-pages@v5
