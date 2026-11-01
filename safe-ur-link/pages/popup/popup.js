@@ -15,7 +15,7 @@ $('tab').onclick = async () => {
 $('opt').onclick = () => chrome.runtime.openOptionsPage();
 chrome.runtime.sendMessage({ type: 'status' }).then(s => {
   const n = Object.values(s.counts || {}).reduce((a, b) => a + b, 0);
-  $('st').textContent = n ? `시그니처 ${n.toLocaleString()}건` : '시그니처 DB가 비어 있습니다 — 설정에서 업데이트하세요';
+  $('st').textContent = n ? `시그니처 ${n.toLocaleString()}건` : '시그니처 DB가 비어 있습니다 — 설정에서 지금 업데이트를 눌러주세요';
 });
 
 // Ctrl+V / Cmd+V 붙여넣기 지원: 기본 붙여넣기가 막히는 환경에서도 클립보드를 직접 읽어 입력창에 넣는다

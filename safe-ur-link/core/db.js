@@ -20,13 +20,6 @@ export async function replaceSource(source, items) {   // items: [{url, meta}]
   for (const it of items) st.put({ id: `${source}|${it.url}`, url: it.url, source, meta: it.meta });
   await done(tx);
 }
-// 하나의 트랜잭션으로 적용하여 실패 시 이전 DB를 보존한다.
-export async function replaceAll(items) {
-  const db = await open(); const tx = db.transaction(STORE, 'readwrite'); const st = tx.objectStore(STORE);
-  st.clear();
-  for (const it of items) st.put({ id: `${it.source}|${it.url}`, url: it.url, source: it.source, meta: it.meta });
-  await done(tx);
-}
 export async function lookup(url) {
   const db = await open();
   return reqp(db.transaction(STORE).objectStore(STORE).index('url').getAll(url));
@@ -36,10 +29,8 @@ export async function all() {
   return reqp(db.transaction(STORE).objectStore(STORE).getAll());
 }
 export async function countBySource() {
-  const db = await open();
-  const index = db.transaction(STORE, 'readonly').objectStore(STORE).index('source');
-  const sources = ['URLhaus', 'PhishTank', 'OpenPhish', 'ThreatFox', 'Demo'];
-  // 트랜잭션이 닫히기 전에 요청을 모두 큐에 넣는다.
-  const counts = await Promise.all(sources.map(s => reqp(index.count(IDBKeyRange.only(s)))));
-  return Object.fromEntries(sources.map((s, i) => [s, counts[i]]));
+  const db = await open(); const st = db.transaction(STORE).objectStore(STORE).index('source');
+  const out = {};
+  for (const s of ['URLhaus', 'PhishTank', 'OpenPhish', 'ThreatFox', 'Demo']) out[s] = await reqp(st.count(IDBKeyRange.only(s)));
+  return out;
 }

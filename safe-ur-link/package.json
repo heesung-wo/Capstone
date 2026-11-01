@@ -1,10 +1,12 @@
 {
   "name": "safe-ur-link",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
+  "description": "Safe UR Link 확장 프로그램의 시그니처 피드 빌드/테스트용 (확장 프로그램 자체에는 포함되지 않음)",
   "scripts": {
-    "build:feed": "node scripts/build-feed.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test \"tests/*.test.mjs\"",
+    "build:feed": "node scripts/build-feed.mjs"
   },
-  "engines": { "node": ">=22" }
+  "engines": { "node": ">=20" }
 }
