@@ -44,10 +44,10 @@ jobs:
           ABUSE_CH_AUTH_KEY: ${{ secrets.ABUSE_CH_AUTH_KEY }}
           PHISHTANK_KEY: ${{ secrets.PHISHTANK_KEY }}
           PHISHTANK_USER_AGENT: ${{ vars.PHISHTANK_USER_AGENT }}
-          PUBLISH_URLHAUS: 'false'
-          PUBLISH_THREATFOX: 'false'
-          PUBLISH_PHISHTANK: 'false'
-          PUBLISH_OPENPHISH: 'false'
+          PUBLISH_URLHAUS: 'true'
+          PUBLISH_THREATFOX: 'true'
+          PUBLISH_PHISHTANK: 'true'
+          PUBLISH_OPENPHISH: 'true'
           REDISTRIBUTION_CONFIRMED: 'false'
           OPENPHISH_WRITTEN_PERMISSION: 'false'
         run: npm run build:feed
