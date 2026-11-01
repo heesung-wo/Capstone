@@ -1,85 +1,121 @@
-// GitHub Actions 전용 수집기. 외부 API 키는 환경변수에서만 읽고 게시 데이터에 절대 넣지 않는다.
-import { writeFile, mkdir } from 'node:fs/promises';
+// GitHub Actions에서 실행되는 시그니처 수집 스크립트.
+// 비밀 키는 환경변수로만 읽고, 결과물(public/signatures.json)에는 URL과 최소 메타데이터만 담는다.
+//   ABUSE_CH_AUTH_KEY  : URLhaus / ThreatFox
+//   PHISHTANK_KEY      : PhishTank (선택)
+//   PHISHTANK_USER_AGENT : PhishTank 요청에 쓸 식별 가능한 User-Agent
+//   PUBLISH_* / REDISTRIBUTION_CONFIRMED / OPENPHISH_WRITTEN_PERMISSION : 공개 재배포 허용 스위치
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { urlhaus, threatfox, phishtank, openphish } from './collectors.mjs';
 import { normalizeUrl } from '../core/common.js';
+import { urlhaus, phishtank, openphish, threatfox } from '../core/feeds.js';
+import { validateFeed, SCHEMA_VERSION } from '../core/remote-feed.js';
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const enabled = {
-  URLhaus: process.env.PUBLISH_URLHAUS === 'true',
-  ThreatFox: process.env.PUBLISH_THREATFOX === 'true',
-  PhishTank: process.env.PUBLISH_PHISHTANK === 'true',
-  OpenPhish: process.env.PUBLISH_OPENPHISH === 'true'
-};
-const selected = Object.keys(enabled).filter(k => enabled[k]);
-const providers = {
-  URLhaus: () => urlhaus({ authKey: process.env.ABUSE_CH_AUTH_KEY || '' }),
-  ThreatFox: () => threatfox({ authKey: process.env.ABUSE_CH_AUTH_KEY || '' }),
-  PhishTank: () => phishtank({ phishKey: process.env.PHISHTANK_KEY || '', userAgent: process.env.PHISHTANK_USER_AGENT || '' }),
-  OpenPhish: () => openphish()
-};
+const MAX_RECORDS = 300_000; // core/remote-feed.js 의 확장 프로그램 허용 한도와 동일
 
-function sanitizeMeta(m = {}) {
+// 재배포가 확인된 소스만 공개 JSON에 포함한다. 기본값은 모두 비공개(false).
+export function enabledSources(env = {}) {
+  const confirmed = env.REDISTRIBUTION_CONFIRMED === 'true';
+  const on = name => confirmed && env[`PUBLISH_${name}`] === 'true';
   return {
-    verified: m.verified === true,
-    online: m.online === true,
-    confidence: Number.isFinite(m.confidence) ? Math.max(0, Math.min(100, m.confidence)) : 0,
-    threat: String(m.threat || '').slice(0, 100),
-    ...(m.first_seen && !Number.isNaN(Date.parse(m.first_seen)) ? { first_seen: m.first_seen } : {})
+    URLhaus: on('URLHAUS'),
+    ThreatFox: on('THREATFOX'),
+    PhishTank: on('PHISHTANK'),
+    OpenPhish: on('OPENPHISH') && env.OPENPHISH_WRITTEN_PERMISSION === 'true'
   };
 }
+
+export function defaultCollectors(env = {}) {
+  return {
+    URLhaus: () => urlhaus({ authKey: env.ABUSE_CH_AUTH_KEY || '' }),
+    ThreatFox: () => threatfox({ authKey: env.ABUSE_CH_AUTH_KEY || '' }),
+    PhishTank: () => phishtank({
+      phishKey: env.PHISHTANK_KEY || '',
+      userAgent: env.PHISHTANK_USER_AGENT || 'safe-ur-link-feed-builder'
+    }),
+    OpenPhish: () => openphish()
+  };
+}
+
+// 확장 프로그램의 점수 계산에 필요한 비민감 필드만 남긴다.
+function slimMeta(m = {}) {
+  const meta = {
+    online: m.online === true,
+    verified: m.verified === true,
+    confidence: Number.isFinite(m.confidence) ? m.confidence : 0,
+    threat: typeof m.threat === 'string' ? m.threat.slice(0, 100) : ''
+  };
+  if (typeof m.first_seen === 'string') meta.first_seen = m.first_seen;
+  return meta;
+}
+
+// 한 소스의 원본 행을 정규화·중복 제거하고 비민감 메타만 남긴다.
 export function normalizeRows(source, rows) {
-  if (!Array.isArray(rows)) throw new Error(`${source}: API 응답이 목록이 아닙니다.`);
-  const map = new Map();
-  for (const row of rows) {
-    if (typeof row?.url !== 'string' || !/^https?:\/\//i.test(row.url)) continue;
-    const url = normalizeUrl(row.url);
-    if (url && !map.has(url)) map.set(url, { url, source, meta: sanitizeMeta(row.meta) });
+  const seen = new Set();
+  const out = [];
+  for (const row of rows || []) {
+    const url = normalizeUrl(row?.url);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    out.push({ url, source, meta: slimMeta(row.meta || {}) });
   }
-  return [...map.values()];
+  return out;
 }
-async function main() {
-  if (selected.length && process.env.REDISTRIBUTION_CONFIRMED !== 'true') {
-    throw new Error('외부 데이터를 공개 재배포하려면 먼저 제공자 허가/약관을 검토하고 REDISTRIBUTION_CONFIRMED=true로 설정하세요.');
-  }
-  if (enabled.OpenPhish && process.env.OPENPHISH_WRITTEN_PERMISSION !== 'true') {
-    throw new Error('OpenPhish: 서면 재배포 허가 확인 없이는 공개 배포를 활성화할 수 없습니다.');
-  }
-  if ((enabled.URLhaus || enabled.ThreatFox) && !process.env.ABUSE_CH_AUTH_KEY) {
-    throw new Error('ABUSE_CH_AUTH_KEY GitHub Actions Secret이 없습니다.');
-  }
-  let signatures = [], sources = [];
-  if (!selected.length) {
-    // 기본 배포는 .test 시연 데이터만 사용. 실존하는 악성 주소는 공개하지 않는다.
-    signatures = normalizeRows('Demo', [
-      { url: 'http://malware.test/demo', meta: { threat: 'demo' } },
-      { url: 'https://phishing.test/login', meta: { threat: 'demo' } }
-    ]);
-    sources = [{ name: 'Demo', count: signatures.length }];
+
+function demoSignatures(now) {
+  const first_seen = new Date(now).toISOString();
+  return ['https://malware.test/demo', 'https://phishing.test/login'].map(url => ({
+    url, source: 'Demo',
+    meta: { online: true, verified: true, confidence: 90, threat: 'demo', first_seen }
+  }));
+}
+
+export async function buildFeed(env = {}, { collectors = defaultCollectors(env), now = Date.now(), log = () => {} } = {}) {
+  const enabled = enabledSources(env);
+  const names = Object.keys(enabled).filter(n => enabled[n]);
+  const secrets = [env.ABUSE_CH_AUTH_KEY, env.PHISHTANK_KEY].filter(Boolean);
+  const redact = msg => secrets.reduce((s, k) => s.split(k).join('***'), String(msg));
+
+  let signatures = [];
+  const failures = [];
+  if (!names.length) {
+    log('공개가 허용된 소스가 없어 시연용(.test) 데이터만 생성합니다.');
+    signatures = demoSignatures(now);
   } else {
-    for (const name of selected) {
-      // 한 소스라도 수집 실패하면 배포를 취소한다. 이전 GitHub Pages 배포는 유지됨.
-      const list = normalizeRows(name, await providers[name]());
-      if (!list.length && name !== 'ThreatFox') throw new Error(`${name}: 유효한 URL이 0건이므로 배포를 중단합니다.`);
-      signatures.push(...list);
-      sources.push({ name, count: list.length });
-      console.log(`${name}: ${list.length}개 수집됨`);
+    for (const name of names) {
+      try {
+        const rows = normalizeRows(name, await collectors[name]());
+        signatures.push(...rows);
+        log(`${name}: ${rows.length}건`);
+      } catch (e) {
+        failures.push(`${name}: ${redact(e?.message || e)}`);
+      }
     }
+    // 일부라도 실패하면 배포하지 않는다 → Pages에는 마지막 정상 배포본이 그대로 남는다.
+    if (failures.length) throw new Error(`피드 수집 실패, 이전 배포본을 유지합니다.\n${failures.join('\n')}`);
   }
-  if (!signatures.length) throw new Error('통합 시그니처가 0건입니다. 배포 중단.');
-  if (signatures.length > 300_000) throw new Error('시그니처 300,000건 초과, 분할 파일 설계 필요');
-  const feed = { schema: 1, generatedAt: new Date().toISOString(), sources, signatures };
-  await mkdir(join(ROOT, 'public'), { recursive: true });
-  await writeFile(join(ROOT, 'public', 'signatures.json'), JSON.stringify(feed), 'utf8');
-  console.log(`GitHub Pages 공개 JSON 생성 완료: ${signatures.length}건`);
+  if (signatures.length > MAX_RECORDS) throw new Error(`시그니처가 ${MAX_RECORDS.toLocaleString()}건을 초과했습니다 (${signatures.length}건).`);
+
+  const feed = {
+    schema: SCHEMA_VERSION,
+    generatedAt: new Date(now).toISOString(),
+    signatures,
+    ...(signatures.length ? {} : { emptyDataset: true })
+  };
+  validateFeed(feed); // 확장 프로그램이 거부할 형식이면 여기서 빌드를 실패시킨다.
+  return feed;
 }
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  main().catch(error => {
-    // 오류 본문에 키가 포함된 경우를 대비해 마스킹한다.
-    let msg = String(error?.message || error);
-    for (const key of [process.env.ABUSE_CH_AUTH_KEY, process.env.PHISHTANK_KEY].filter(Boolean)) msg = msg.replaceAll(key, '[SECRET]');
-    console.error(msg);
-    process.exitCode = 1;
-  });
+
+async function main() {
+  const feed = await buildFeed(process.env, { log: m => console.log(m) });
+  const dir = fileURLToPath(new URL('../public/', import.meta.url));
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, 'signatures.json'), JSON.stringify(feed));
+  await writeFile(path.join(dir, 'index.html'),
+    '<!doctype html><meta charset="utf-8"><title>Safe UR Link signatures</title><p>signatures.json 만 제공하는 공개 피드입니다.</p>');
+  console.log(`완료: ${feed.signatures.length}건 → public/signatures.json`);
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(e => { console.error(e.message || e); process.exit(1); });
 }

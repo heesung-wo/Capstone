@@ -1,10 +1,13 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>Safe UR Link 설정</title><link rel="stylesheet" href="../../assets/css/ui.css">
-<style>body{max-width:680px;margin:30px auto;padding:0 20px}section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px;margin:16px 0}h2{font-size:15px;margin-bottom:8px}label{display:block;margin:10px 0 4px}textarea{height:90px}table{width:100%;border-collapse:collapse}td{padding:5px;border-bottom:1px solid var(--line)}.err{color:var(--red)}.break{overflow-wrap:anywhere}</style></head>
+<style>body{max-width:680px;margin:30px auto;padding:0 20px}section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px;margin:16px 0}h2{font-size:15px;margin-bottom:8px}label{display:block;margin:10px 0 4px}textarea{height:90px}table{width:100%;border-collapse:collapse}td{padding:4px 0}.err{color:var(--red)}</style></head>
 <body><h1>Safe UR Link 설정</h1>
-<section><h2>실시간 보호</h2><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="realtime" style="width:auto"> 알려진 악성 URL 접속 전에 경고 페이지 표시</label><p class="muted" id="rc"></p></section>
-<section><h2>위협 정보 업데이트 (개발자 관리형)</h2>
-<p class="muted">개발자의 GitHub Actions가 외부 데이터베이스를 수집합니다. 사용자는 별도의 API 키가 필요하지 않습니다.</p><p class="muted break" id="feedUrl"></p><p id="feedStatus" class="muted"></p>
-<button type="button" class="btn" id="sync">지금 업데이트</button> <span class="muted">6시간마다 확인 · 서버에서는 하루 1회 수집 예정</span>
-<table id="tbl"></table><p class="muted">다운로드 실패 시 기존 DB를 유지합니다. 위협 미탐지가 안전함을 보증하지는 않습니다.</p></section>
-<section><h2>허용 목록</h2><textarea id="allow" aria-label="허용 도메인" placeholder="한 줄에 도메인 하나 (예: example.com)"></textarea><h2 style="margin-top:14px">차단 목록</h2><textarea id="block" aria-label="차단 도메인" placeholder="한 줄에 도메인 하나"></textarea></section>
-<button class="btn" id="save">설정 저장</button> <span id="msg" class="muted"></span><script type="module" src="options.js"></script></body></html>
+<section><h2>실시간 보호</h2><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="realtime" style="width:auto"> 알려진 악성 URL 접속 전에 경고 페이지 표시</label>
+<p class="muted" id="rc"></p></section>
+<section><h2>위협 정보 업데이트</h2>
+<p class="muted">개발자가 매일 수집해 공개한 시그니처 데이터를 자동으로 받아옵니다. API 키를 입력할 필요가 없습니다.</p>
+<div style="margin-top:12px"><button class="btn" id="sync">지금 업데이트</button> <span class="muted">6시간마다 자동 확인</span></div>
+<table id="tbl"></table><p class="muted" id="note"></p></section>
+<section><h2>허용 목록</h2><textarea id="allow" aria-label="허용 도메인" placeholder="한 줄에 도메인 하나 (예: example.com)"></textarea>
+<h2 style="margin-top:14px">차단 목록</h2><textarea id="block" aria-label="차단 도메인" placeholder="한 줄에 도메인 하나"></textarea></section>
+<button class="btn" id="save">설정 저장</button> <span id="msg" class="muted"></span>
+<script type="module" src="options.js"></script></body></html>

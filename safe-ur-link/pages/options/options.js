@@ -1,34 +1,38 @@
 import { hostOf } from '../../core/common.js';
 import { esc } from '../../shared/render.js';
 const $ = id => document.getElementById(id);
+const STALE_MS = 3 * 24 * 60 * 60_000;
 const lines = t => [...new Set(t.split('\n').map(x => x.trim()).filter(Boolean).map(x => hostOf(/^[a-z]+:\/\//i.test(x) ? x : 'http://' + x)).filter(Boolean))];
 async function load() {
   const s = await chrome.storage.local.get(['realtime', 'allow', 'block']);
   $('realtime').checked = s.realtime !== false;
   $('allow').value = (s.allow || []).join('\n'); $('block').value = (s.block || []).join('\n');
-  await status();
+  status();
 }
 async function status() {
-  const s = await chrome.runtime.sendMessage({ type: 'status' }), r = s.remoteState || {};
-  $('rc').textContent = `적용 중인 차단 규칙 ${(s.ruleCount || 0).toLocaleString()}개`;
-  $('feedUrl').textContent = `배포 주소: ${s.feedUrl || '미설정'}`;
-  const time = t => t ? new Date(t).toLocaleString() : '없음';
-  const stale = !!(r.generatedAt && Date.now() - Date.parse(r.generatedAt) > 48 * 3600_000);
-  $('feedStatus').textContent = r.error ? `업데이트 실패: ${r.error} · 기존 DB 유지` : r.generatedAt
-    ? `배포 시각: ${time(r.generatedAt)} · 다음 확인: ${time(r.nextAt)}${r.demoOnly ? ' · 시연용 데이터만 포함' : ''}${stale ? ' · 오래된 데이터' : ''}` : '아직 업데이트 전';
-  $('feedStatus').className = r.error || stale ? 'err' : 'muted';
-  $('tbl').innerHTML = Object.entries(s.counts || {}).map(([name, n]) => `<tr><td>${esc(name)}</td><td>${n.toLocaleString()}건</td></tr>`).join('');
+  const s = await chrome.runtime.sendMessage({ type: 'status' }), m = s.feedMeta || {};
+  const time = t => new Date(t).toLocaleString();
+  $('rc').textContent = `적용 중인 실시간 차단 규칙 ${(s.ruleCount || 0).toLocaleString()}개 (Chrome 한도로 최대 약 5,000개까지 적용되며, 전체 DB는 수동 검사에 모두 사용됩니다)`;
+  const rows = Object.entries(s.counts || {}).filter(([k, n]) => k !== 'Demo' || n > 0)
+    .map(([k, n]) => `<tr><td>${esc(k)}</td><td>${n.toLocaleString()}건</td></tr>`);
+  if (m.generatedAt) rows.push(`<tr><td colspan="2" class="muted">데이터 생성 시각: ${esc(time(m.generatedAt))}</td></tr>`);
+  if (m.lastSuccess) rows.push(`<tr><td colspan="2" class="muted">마지막 업데이트: ${esc(time(m.lastSuccess))}</td></tr>`);
+  if (m.nextAt) rows.push(`<tr><td colspan="2" class="muted">다음 확인: ${esc(time(m.nextAt))}</td></tr>`);
+  if (m.ruleError) rows.push(`<tr><td colspan="2" class="err">차단 규칙 적용 오류: ${esc(m.ruleError)}</td></tr>`);
+  if (m.lastError) rows.push(`<tr><td colspan="2" class="err">최근 오류: ${esc(m.lastError)} (기존 데이터 유지 중)</td></tr>`);
+  $('tbl').innerHTML = rows.join('') || '<tr><td class="muted">아직 업데이트하지 않았습니다.</td></tr>';
+  const notes = [];
+  if (m.demoOnly) notes.push('현재 시연용 데이터(.test 주소)만 포함되어 있어 실제 악성 URL은 탐지하지 않습니다.');
+  if (m.generatedAt && Date.now() - Date.parse(m.generatedAt) > STALE_MS) notes.push('공개된 데이터가 3일 이상 갱신되지 않았습니다.');
+  $('note').textContent = notes.join(' ');
 }
 $('save').onclick = async () => {
-  $('msg').textContent = '저장 중…';
   await chrome.storage.local.set({ realtime: $('realtime').checked, allow: lines($('allow').value), block: lines($('block').value) });
-  const r = await chrome.runtime.sendMessage({ type: 'rebuild' });
-  $('msg').textContent = r?.error ? `오류: ${r.error}` : '설정 저장 완료';
-  await status();
+  await chrome.runtime.sendMessage({ type: 'rebuild' }); await load(); $('msg').textContent = '저장했습니다';
 };
 $('sync').onclick = async () => {
-  const btn = $('sync'); btn.disabled = true; btn.textContent = '업데이트 중…';
-  try { await chrome.runtime.sendMessage({ type: 'sync' }); await status(); }
-  finally { btn.disabled = false; btn.textContent = '지금 업데이트'; }
+  $('sync').disabled = true; $('sync').textContent = '업데이트 중…';
+  await $('save').onclick(); await chrome.runtime.sendMessage({ type: 'sync', force: true });
+  $('sync').disabled = false; $('sync').textContent = '지금 업데이트'; await status();
 };
 load();
