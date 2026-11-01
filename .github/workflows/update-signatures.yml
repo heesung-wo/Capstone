@@ -48,7 +48,7 @@ jobs:
           PUBLISH_THREATFOX: 'true'
           PUBLISH_PHISHTANK: 'true'
           PUBLISH_OPENPHISH: 'true'
-          REDISTRIBUTION_CONFIRMED: 'false'
+          REDISTRIBUTION_CONFIRMED: 'true'
           OPENPHISH_WRITTEN_PERMISSION: 'false'
         run: npm run build:feed
 
