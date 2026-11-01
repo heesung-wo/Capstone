@@ -17,6 +17,10 @@ const MAX_RECORDS = 300_000; // core/remote-feed.js 의 확장 프로그램 허�
 // 필요하면 워크플로 환경변수 MAX_PER_SOURCE 로 바꿀 수 있다.
 export const MAX_PER_SOURCE = 10_000;
 
+// 일시적인 오류(5xx, 429, 네트워크 실패)만 재시도한다. 401/403/404 같은 설정 오류는 재시도해도 소용없으므로 바로 실패시킨다.
+const RETRY_DELAYS_MS = [5_000, 20_000];
+const isTransient = e => e?.httpStatus >= 500 || e?.httpStatus === 429 || /네트워크 요청 실패/.test(e?.message || '');
+
 // 재배포가 확인된 소스만 공개 JSON에 포함한다. 기본값은 모두 비공개(false).
 export function enabledSources(env = {}) {
   const confirmed = env.REDISTRIBUTION_CONFIRMED === 'true';
@@ -96,37 +100,57 @@ function demoSignatures(now) {
   }));
 }
 
-export async function buildFeed(env = {}, { collectors = defaultCollectors(env), now = Date.now(), log = () => {} } = {}) {
+export async function buildFeed(env = {}, { collectors = defaultCollectors(env), now = Date.now(), log = () => {}, sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
   const limit = Number(env.MAX_PER_SOURCE) > 0 ? Math.floor(Number(env.MAX_PER_SOURCE)) : MAX_PER_SOURCE;
   const seed = new Date(now).toISOString().slice(0, 10);   // 표본 선택용 날짜 시드 (UTC)
   const enabled = enabledSources(env);
   const names = Object.keys(enabled).filter(n => enabled[n]);
   const secrets = [env.ABUSE_CH_AUTH_KEY, env.PHISHTANK_KEY].filter(Boolean);
   const redact = msg => secrets.reduce((s, k) => s.split(k).join('***'), String(msg));
+  // OPTIONAL_SOURCES(쉼표로 구분)에 적은 소스는 수집에 실패해도 나머지 소스만으로 배포한다.
+  // 단, 실패한 소스의 데이터는 그날 피드에서 빠지므로 확장 프로그램에서도 해당 소스 데이터가 비워진다.
+  const optional = new Set(String(env.OPTIONAL_SOURCES || '').split(',').map(x => x.trim()).filter(Boolean));
+  const withRetry = async (name, fn) => {
+    for (let i = 0; ; i++) {
+      try { return await fn(); }
+      catch (e) {
+        if (i >= RETRY_DELAYS_MS.length || !isTransient(e)) throw e;
+        log(`${name}: 일시적 오류(${redact(e.message || e)}) — ${RETRY_DELAYS_MS[i] / 1000}초 후 재시도 (${i + 1}/${RETRY_DELAYS_MS.length})`);
+        await sleep(RETRY_DELAYS_MS[i]);
+      }
+    }
+  };
 
   let signatures = [];
   const counts = {};
   const failures = [];
+  const warnings = [];
+  const succeeded = [];
   if (!names.length) {
     log('공개가 허용된 소스가 없어 시연용(.test) 데이터만 생성합니다.');
     signatures = demoSignatures(now);
   } else {
     for (const name of names) {
       try {
-        let rows = normalizeRows(name, await collectors[name]());
+        let rows = normalizeRows(name, await withRetry(name, () => collectors[name]()));
         const found = rows.length;
         rows = pickTop(rows, limit, seed);
         if (found > rows.length) log(`${name}: 원본 ${found.toLocaleString()}건 중 상위 ${rows.length.toLocaleString()}건만 사용 (소스별 상한)`);
         // 주의: push(...rows)는 12만 건 이상에서 "Maximum call stack size exceeded"가 발생하므로 반복문을 쓴다.
         for (const r of rows) signatures.push(r);
         counts[name] = rows.length;
+        succeeded.push(name);
         log(`${name}: ${rows.length}건`);
       } catch (e) {
-        failures.push(`${name}: ${redact(e?.message || e)}`);
+        const msg = `${name}: ${redact(e?.message || e)}`;
+        if (optional.has(name)) { warnings.push(msg); log(`경고: ${msg} — 선택 소스이므로 이번 배포에서는 제외합니다.`); }
+        else failures.push(msg);
       }
     }
     // 일부라도 실패하면 배포하지 않는다 → Pages에는 마지막 정상 배포본이 그대로 남는다.
     if (failures.length) throw new Error(`피드 수집 실패, 이전 배포본을 유지합니다.\n${failures.join('\n')}`);
+    // 선택 소스까지 전부 실패했다면 빈 피드로 기존 데이터를 지우지 않도록 중단한다.
+    if (!succeeded.length) throw new Error(`수집에 성공한 소스가 없어 이전 배포본을 유지합니다.\n${warnings.join('\n')}`);
   }
   if (signatures.length > MAX_RECORDS) {
     const detail = Object.entries(counts).map(([k, n]) => `${k} ${n}건`).join(', ');
@@ -138,7 +162,7 @@ export async function buildFeed(env = {}, { collectors = defaultCollectors(env),
     schema: SCHEMA_VERSION,
     generatedAt: new Date(now).toISOString(),
     signatures,
-    ...(names.length && names.some(n => NOTICES[n]) ? { notices: names.filter(n => NOTICES[n]).map(n => ({ source: n, ...NOTICES[n] })) } : {}),
+    ...(succeeded.some(n => NOTICES[n]) ? { notices: succeeded.filter(n => NOTICES[n]).map(n => ({ source: n, ...NOTICES[n] })) } : {}),
     ...(signatures.length ? {} : { emptyDataset: true })
   };
   validateFeed(feed); // 확장 프로그램이 거부할 형식이면 여기서 빌드를 실패시킨다.

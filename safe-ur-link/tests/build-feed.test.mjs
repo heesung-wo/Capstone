@@ -133,3 +133,56 @@ test('전체 한도(30만 건)는 안전장치로 남아 있고 소스별 건수
     /URLhaus 300001건/
   );
 });
+
+const http = status => Object.assign(new Error(`HTTP ${status}`), { httpStatus: status });
+const noSleep = async () => {};
+const ENV = { REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_URLHAUS: 'true', PUBLISH_PHISHING_DB: 'true' };
+
+test('일시적인 503은 재시도해서 성공하면 정상 배포한다', async () => {
+  let calls = 0;
+  const logs = [];
+  const collectors = { PhishingDB: async () => { if (++calls < 3) throw http(503); return [{ url: 'https://p.invalid/a', meta: {} }]; } };
+  const feed = await buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_PHISHING_DB: 'true' }, { collectors, sleep: noSleep, log: m => logs.push(m) });
+  assert.equal(calls, 3);
+  assert.equal(feed.signatures.length, 1);
+  assert.ok(logs.some(m => /재시도 \(1\/2\)/.test(m)));
+});
+
+test('403/404 같은 설정 오류는 재시도하지 않는다', async () => {
+  let calls = 0;
+  const collectors = { PhishingDB: async () => { calls++; throw http(403); } };
+  await assert.rejects(buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_PHISHING_DB: 'true' }, { collectors, sleep: noSleep }), /HTTP 403/);
+  assert.equal(calls, 1);
+});
+
+test('503이 계속되면 재시도 횟수(총 3번) 후 실패한다', async () => {
+  let calls = 0;
+  const collectors = { PhishingDB: async () => { calls++; throw http(503); } };
+  await assert.rejects(buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_PHISHING_DB: 'true' }, { collectors, sleep: noSleep }), /HTTP 503/);
+  assert.equal(calls, 3);
+});
+
+test('선택 소스가 실패해도 나머지로 배포하고, 실패한 소스의 고지는 넣지 않는다', async () => {
+  const collectors = {
+    URLhaus: async () => [{ url: 'https://u.invalid/a', meta: { online: true } }],
+    PhishingDB: async () => { throw http(503); }
+  };
+  const logs = [];
+  const feed = await buildFeed({ ...ENV, OPTIONAL_SOURCES: 'PhishingDB' }, { collectors, sleep: noSleep, log: m => logs.push(m) });
+  assert.deepEqual(feed.signatures.map(s => s.source), ['URLhaus']);
+  assert.equal(feed.notices, undefined);
+  assert.ok(logs.some(m => /경고: PhishingDB/.test(m)));
+});
+
+test('선택 소스가 아니면 실패 시 전체 배포를 중단한다', async () => {
+  const collectors = { URLhaus: async () => [{ url: 'https://u.invalid/a' }], PhishingDB: async () => { throw http(503); } };
+  await assert.rejects(buildFeed(ENV, { collectors, sleep: noSleep }), /이전 배포본/);
+});
+
+test('선택 소스만 켰는데 전부 실패하면 빈 피드로 덮어쓰지 않고 중단한다', async () => {
+  const collectors = { PhishingDB: async () => { throw http(503); } };
+  await assert.rejects(
+    buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_PHISHING_DB: 'true', OPTIONAL_SOURCES: 'PhishingDB' }, { collectors, sleep: noSleep }),
+    /성공한 소스가 없어/
+  );
+});
