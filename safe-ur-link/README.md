@@ -27,7 +27,7 @@ Chrome / Whale MV3 확장 프로그램. 알려진 악성 URL을 접속 전에 �
 4. **첫 배포**: Actions 탭 → *Build and deploy signatures* → *Run workflow*
    - 기본값에서는 `.test` 도메인 시연 데이터만 배포됩니다.
 5. 배포 후 `https://<계정>.github.io/Capstone/signatures.json` 이 열리는지 확인하고, 다르면 `core/config.js`와 `manifest.json`의 `host_permissions`를 맞춥니다.
-6. **실제 데이터 공개**: 각 소스의 약관에서 공개 재배포가 허용되는지 확인한 뒤, 워크플로의 해당 `PUBLISH_*`와 `REDISTRIBUTION_CONFIRMED`를 `'true'`로 바꿉니다. (OpenPhish는 `OPENPHISH_WRITTEN_PERMISSION`도 필요)
+6. **실제 데이터 공개**: 각 소스의 약관에서 공개 재배포가 허용되는지 확인한 뒤, 워크플로의 해당 `PUBLISH_*`와 `REDISTRIBUTION_CONFIRMED`를 `'true'`로 바꿉니다. (`PUBLISH_URLHAUS`, `PUBLISH_THREATFOX`, `PUBLISH_PHISHTANK`, `PUBLISH_PHISHING_DB`)
 
 > `signatures.json`은 누구나 내려받을 수 있는 공개 파일입니다. 키는 들어가지 않지만 수집한 URL 목록은 공개됩니다.
 
@@ -57,7 +57,9 @@ npm run build:feed       # public/signatures.json 생성 (환경변수 없으면
 ## 유의 사항
 
 - 외부 DB에 없는 URL을 안전하다고 단정할 수 없습니다. UI 판정 `No Threat Detected`는 "위협 미탐지"를 뜻합니다.
-- OpenPhish 무료 피드는 최초 관측 시각을 제공하지 않아 해당 값을 임의로 생성하지 않습니다.
+- Phishing.Database 목록은 등록 시각, 검증 여부, 활성 여부를 제공하지 않아 해당 값을 임의로 생성하지 않습니다. 상한(1만 건)을 넘으면 날짜 시드 기반 무작위 표본을 사용합니다.
+- Phishing.Database는 MIT 라이선스입니다. 공개하면 `signatures.json`(`notices`)과 Pages 첫 화면에 저작권·라이선스 고지가 함께 실립니다.
+- OpenPhish 무료 피드는 비상업 용도로 제한되고 재배포 조건이 불명확해 지원하지 않습니다.
 - 이전 버전(사용자가 키를 직접 입력)에서 업데이트하면 저장돼 있던 키가 자동 삭제됩니다.
 - 실제 외부 서버 인증과 대용량 수집, 브라우저에서의 확장 프로그램 동작은 이 환경에서 검증하지 못했습니다. 로직은 모의 응답으로 테스트했습니다.
 

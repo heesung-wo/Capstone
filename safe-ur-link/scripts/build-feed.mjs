@@ -3,12 +3,13 @@
 //   ABUSE_CH_AUTH_KEY  : URLhaus / ThreatFox
 //   PHISHTANK_KEY      : PhishTank (선택)
 //   PHISHTANK_USER_AGENT : PhishTank 요청에 쓸 식별 가능한 User-Agent
-//   PUBLISH_* / REDISTRIBUTION_CONFIRMED / OPENPHISH_WRITTEN_PERMISSION : 공개 재배포 허용 스위치
+//   PUBLISH_* / REDISTRIBUTION_CONFIRMED : 소스별 공개 재배포 허용 스위치 (URLHAUS, THREATFOX, PHISHTANK, PHISHING_DB)
+import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeUrl } from '../core/common.js';
-import { urlhaus, phishtank, openphish, threatfox } from '../core/feeds.js';
+import { urlhaus, phishtank, phishingDatabase, threatfox } from '../core/feeds.js';
 import { validateFeed, SCHEMA_VERSION } from '../core/remote-feed.js';
 
 const MAX_RECORDS = 300_000; // core/remote-feed.js 의 확장 프로그램 허용 한도와 동일 (안전장치)
@@ -24,9 +25,19 @@ export function enabledSources(env = {}) {
     URLhaus: on('URLHAUS'),
     ThreatFox: on('THREATFOX'),
     PhishTank: on('PHISHTANK'),
-    OpenPhish: on('OPENPHISH') && env.OPENPHISH_WRITTEN_PERMISSION === 'true'
+    PhishingDB: on('PHISHING_DB')
   };
 }
+
+// MIT 라이선스 등 고지가 필요한 소스. 공개 피드(signatures.json, index.html)에 그대로 실린다.
+export const NOTICES = {
+  PhishingDB: {
+    name: 'Phishing.Database',
+    license: 'MIT License',
+    copyright: 'Copyright (c) 2018-2025 Nissar Chababy (@funilrys); Copyright (c) 2018-2025 Phishing.Database Contributors',
+    url: 'https://github.com/Phishing-Database/Phishing.Database'
+  }
+};
 
 export function defaultCollectors(env = {}) {
   return {
@@ -36,7 +47,7 @@ export function defaultCollectors(env = {}) {
       phishKey: env.PHISHTANK_KEY || '',
       userAgent: env.PHISHTANK_USER_AGENT || 'safe-ur-link-feed-builder'
     }),
-    OpenPhish: () => openphish()
+    PhishingDB: () => phishingDatabase({ userAgent: env.FEED_USER_AGENT || 'safe-ur-link-feed-builder (+https://github.com/heesung-wo/Capstone)' })
   };
 }
 
@@ -66,12 +77,14 @@ export function normalizeRows(source, rows) {
 }
 
 // 상한을 넘으면 위험 신호가 강한 행부터 남긴다: 활성(online) → 검증됨 → 신뢰도 높음 → 최근 등록.
-// 점수가 같으면 원본 피드의 순서를 유지한다.
-export function pickTop(rows, limit = MAX_PER_SOURCE) {
+// 점수가 같은 행(예: 등록 시각이 없는 목록)은 원본 파일의 순서에 기대지 않도록 "날짜 시드 기반 무작위 표본"으로 고른다.
+// 같은 날, 같은 입력이면 항상 같은 결과가 나오고(재실행해도 안정적), 날짜가 바뀌면 표본이 바뀐다.
+export function pickTop(rows, limit = MAX_PER_SOURCE, seed = '') {
   if (rows.length <= limit) return rows;
+  const tie = url => createHash('sha1').update(`${seed}|${url}`).digest().readUInt32BE(0);
   const key = r => [r.meta.online ? 1 : 0, r.meta.verified ? 1 : 0, r.meta.confidence || 0, Date.parse(r.meta.first_seen) || 0];
-  return rows.map((r, i) => ({ r, i, k: key(r) }))
-    .sort((a, b) => b.k[0] - a.k[0] || b.k[1] - a.k[1] || b.k[2] - a.k[2] || b.k[3] - a.k[3] || a.i - b.i)
+  return rows.map(r => ({ r, k: key(r), t: tie(r.url) }))
+    .sort((a, b) => b.k[0] - a.k[0] || b.k[1] - a.k[1] || b.k[2] - a.k[2] || b.k[3] - a.k[3] || a.t - b.t)
     .slice(0, limit).map(x => x.r);
 }
 
@@ -85,6 +98,7 @@ function demoSignatures(now) {
 
 export async function buildFeed(env = {}, { collectors = defaultCollectors(env), now = Date.now(), log = () => {} } = {}) {
   const limit = Number(env.MAX_PER_SOURCE) > 0 ? Math.floor(Number(env.MAX_PER_SOURCE)) : MAX_PER_SOURCE;
+  const seed = new Date(now).toISOString().slice(0, 10);   // 표본 선택용 날짜 시드 (UTC)
   const enabled = enabledSources(env);
   const names = Object.keys(enabled).filter(n => enabled[n]);
   const secrets = [env.ABUSE_CH_AUTH_KEY, env.PHISHTANK_KEY].filter(Boolean);
@@ -101,7 +115,7 @@ export async function buildFeed(env = {}, { collectors = defaultCollectors(env),
       try {
         let rows = normalizeRows(name, await collectors[name]());
         const found = rows.length;
-        rows = pickTop(rows, limit);
+        rows = pickTop(rows, limit, seed);
         if (found > rows.length) log(`${name}: 원본 ${found.toLocaleString()}건 중 상위 ${rows.length.toLocaleString()}건만 사용 (소스별 상한)`);
         // 주의: push(...rows)는 12만 건 이상에서 "Maximum call stack size exceeded"가 발생하므로 반복문을 쓴다.
         for (const r of rows) signatures.push(r);
@@ -124,6 +138,7 @@ export async function buildFeed(env = {}, { collectors = defaultCollectors(env),
     schema: SCHEMA_VERSION,
     generatedAt: new Date(now).toISOString(),
     signatures,
+    ...(names.length && names.some(n => NOTICES[n]) ? { notices: names.filter(n => NOTICES[n]).map(n => ({ source: n, ...NOTICES[n] })) } : {}),
     ...(signatures.length ? {} : { emptyDataset: true })
   };
   validateFeed(feed); // 확장 프로그램이 거부할 형식이면 여기서 빌드를 실패시킨다.
@@ -134,8 +149,13 @@ async function main() {
   const feed = await buildFeed(process.env, { log: m => console.log(m) });
   const dir = fileURLToPath(new URL('../public/', import.meta.url));
   await mkdir(dir, { recursive: true });
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const notices = (feed.notices || []).map(n =>
+    `<li><a href="${esc(n.url)}">${esc(n.name)}</a> — ${esc(n.license)}. ${esc(n.copyright)}</li>`).join('');
   await writeFile(path.join(dir, 'index.html'),
-    '<!doctype html><meta charset="utf-8"><title>Safe UR Link signatures</title><p>signatures.json 만 제공하는 공개 피드입니다.</p>');
+    '<!doctype html><meta charset="utf-8"><title>Safe UR Link signatures</title>'
+    + '<p>signatures.json 만 제공하는 공개 피드입니다.</p>'
+    + (notices ? `<h2>Third-party data notices</h2><ul>${notices}</ul>` : ''));
   const json = JSON.stringify(feed);
   await writeFile(path.join(dir, 'signatures.json'), json);
   console.log(`완료: ${feed.signatures.length.toLocaleString()}건, ${(Buffer.byteLength(json) / 1048576).toFixed(1)}MB → public/signatures.json`);

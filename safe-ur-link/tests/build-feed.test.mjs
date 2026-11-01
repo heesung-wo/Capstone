@@ -13,10 +13,42 @@ test('PUBLISH_*만 true이고 REDISTRIBUTION_CONFIRMED가 아니면 공개하지
   assert.equal(e.PhishTank, false);
 });
 
-test('OpenPhish는 서면 허가 스위치가 추가로 필요하다', () => {
-  const base = { REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_OPENPHISH: 'true' };
-  assert.equal(enabledSources(base).OpenPhish, false);
-  assert.equal(enabledSources({ ...base, OPENPHISH_WRITTEN_PERMISSION: 'true' }).OpenPhish, true);
+test('PhishingDB는 PUBLISH_PHISHING_DB와 REDISTRIBUTION_CONFIRMED가 모두 true일 때만 공개한다', () => {
+  assert.equal(enabledSources({ PUBLISH_PHISHING_DB: 'true' }).PhishingDB, false);
+  assert.equal(enabledSources({ REDISTRIBUTION_CONFIRMED: 'true' }).PhishingDB, false);
+  assert.equal(enabledSources({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_PHISHING_DB: 'true' }).PhishingDB, true);
+});
+
+test('OpenPhish는 더 이상 지원하지 않는다', () => {
+  assert.equal('OpenPhish' in enabledSources({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_OPENPHISH: 'true' }), false);
+});
+
+test('PhishingDB를 공개하면 MIT 라이선스 고지가 피드에 포함된다', async () => {
+  const collectors = { PhishingDB: async () => [{ url: 'https://p.invalid/a', meta: { threat: 'phishing' } }] };
+  const feed = await buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_PHISHING_DB: 'true' }, { collectors });
+  assert.equal(feed.notices.length, 1);
+  assert.equal(feed.notices[0].source, 'PhishingDB');
+  assert.equal(feed.notices[0].license, 'MIT License');
+  assert.match(feed.notices[0].copyright, /Phishing\.Database Contributors/);
+  validateFeed(feed);
+});
+
+test('고지가 필요 없는 소스만 켜면 notices를 넣지 않는다', async () => {
+  const collectors = { URLhaus: async () => [{ url: 'https://u.invalid/a', meta: { online: true } }] };
+  const feed = await buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_URLHAUS: 'true' }, { collectors });
+  assert.equal(feed.notices, undefined);
+});
+
+test('시각 정보가 없는 목록은 날짜 시드 기반 표본: 같은 날은 동일, 날짜가 바뀌면 달라진다', () => {
+  const rows = Array.from({ length: 2000 }, (_, i) => ({ url: `https://s${i}.invalid/`, source: 'PhishingDB', meta: { threat: 'phishing' } }));
+  const a = pickTop(rows, 100, '2026-11-01').map(r => r.url);
+  const b = pickTop(rows, 100, '2026-11-01').map(r => r.url);
+  const c = pickTop(rows, 100, '2026-11-02').map(r => r.url);
+  assert.deepEqual(a, b);
+  assert.notDeepEqual(a, c);
+  // 파일 앞부분에 쏠리지 않는다 (앞 100줄이 그대로 선택될 확률은 사실상 0)
+  assert.notDeepEqual(a, rows.slice(0, 100).map(r => r.url));
+  assert.equal(new Set(a).size, 100);
 });
 
 test('공개 소스가 없으면 .test 시연 데이터만 만들고 확장 프로그램 검증을 통과한다', async () => {

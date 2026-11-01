@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { urlhaus, phishtank, openphish, threatfox, REFRESH_MS, PHISHTANK_ANONYMOUS_MS } from '../core/feeds.js';
+import { urlhaus, phishtank, phishingDatabase, threatfox, REFRESH_MS, PHISHTANK_ANONYMOUS_MS, PHISHING_DB_URL } from '../core/feeds.js';
 
 function mock(body, status = 200, headers = {}) {
   return async (url, init = {}) => {
@@ -58,11 +58,36 @@ test('ThreatFox requires key, queries 7 days, preserves first_seen', async () =>
   assert.equal(JSON.parse(lastRequest.init.body).days,7);
 });
 
-test('OpenPhish does not invent first_seen timestamp', async () => {
-  globalThis.fetch = mock('https://bad.invalid/\n# test\n\nhttps://bad2.invalid/a');
-  const items = await openphish();
-  assert.equal(items.length,2);
-  assert.equal(items[0].meta.first_seen,undefined);
+test('PhishingDB: 공식 주소에서 URL만 읽고 주석/빈 줄/비 http 줄은 무시한다', async () => {
+  globalThis.fetch = mock('https://bad.invalid/\n# test\n\nftp://x.invalid/a\nnot a url\nhttps://bad2.invalid/a');
+  const items = await phishingDatabase();
+  assert.equal(PHISHING_DB_URL, 'https://phish.co.za/latest/phishing-links-ACTIVE.txt');
+  assert.equal(lastRequest.url, PHISHING_DB_URL);
+  assert.equal(items.length, 2);
+});
+
+test('PhishingDB: 제공되지 않는 first_seen/verified/online을 만들어 내지 않는다', async () => {
+  globalThis.fetch = mock('https://bad.invalid/');
+  const [item] = await phishingDatabase();
+  assert.equal(item.meta.first_seen, undefined);
+  assert.equal(item.meta.verified, undefined);
+  assert.equal(item.meta.online, undefined);
+  assert.equal(item.meta.threat, 'phishing');
+});
+
+test('PhishingDB: User-Agent는 지정했을 때만 보낸다', async () => {
+  globalThis.fetch = mock('https://bad.invalid/');
+  await phishingDatabase({ userAgent: 'my-agent' });
+  assert.equal(lastRequest.init.headers['User-Agent'], 'my-agent');
+  await phishingDatabase();
+  assert.equal(lastRequest.init.headers, undefined);
+});
+
+test('PhishingDB: HTML 응답이나 빈 파일은 오류', async () => {
+  globalThis.fetch = mock('<html>blocked</html>');
+  await assert.rejects(phishingDatabase(), /HTML/);
+  globalThis.fetch = mock('# only comments\n');
+  await assert.rejects(phishingDatabase(), /유효한 URL/);
 });
 
 test('HTTP 509 surfaces as rate limit', async () => {

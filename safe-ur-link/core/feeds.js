@@ -5,7 +5,7 @@
 export const REFRESH_MS = Object.freeze({
   URLhaus: 60 * 60_000,       // 공식 최소 5분보다 여유 있게 1시간
   PhishTank: 60 * 60_000,     // 인증된 경우: 원본 데이터가 1시간마다 갱신
-  OpenPhish: 6 * 60 * 60_000,
+  PhishingDB: 6 * 60 * 60_000,
   ThreatFox: 6 * 60 * 60_000
 });
 export const PHISHTANK_ANONYMOUS_MS = 24 * 60 * 60_000; // 보수적인 자체 정책, 공식 보장량 아님
@@ -128,14 +128,19 @@ export async function phishtank({ phishKey = '', userAgent = '' } = {}) {
   return records;
 }
 
-export async function openphish() {
-  const response = await getResponse('https://openphish.com/feed.txt');
+// Phishing.Database (MIT 라이선스). 공식 데이터 파일은 phish.co.za 에서 제공한다.
+// 프로젝트가 직접 HTTP 상태를 점검해 분류한 "ACTIVE(또는 아직 활성일 수 있는)" 링크 목록이다.
+export const PHISHING_DB_URL = 'https://phish.co.za/latest/phishing-links-ACTIVE.txt';
+export async function phishingDatabase({ userAgent = '' } = {}) {
+  const response = await getResponse(PHISHING_DB_URL, userAgent ? { headers: { 'User-Agent': userAgent } } : {});
   const text = await response.text();
-  assertNotHtml(text, 'OpenPhish');
+  assertNotHtml(text, 'PhishingDB');
+  // 한 줄에 URL 하나. 이 파일은 같은 링크가 중복으로 들어간 적이 있어서 이후 단계(normalizeRows)에서 중복을 제거한다.
   const records = text.split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('#') && validHttpURL(s))
     .map(url => ({ url, meta: { threat: 'phishing' } }));
-  // 피드가 관측 시각을 제공하지 않으므로 first_seen/online을 임의로 생성하지 않음.
-  if (!records.length) throw new Error('OpenPhish: 유효한 URL이 없는 피드입니다.');
+  // 이 목록은 등록 시각과 검증 여부를 제공하지 않으므로 first_seen/verified/online을 임의로 만들지 않는다.
+  // ("ACTIVE"는 프로젝트의 점검 결과일 뿐, 지금 이 순간 접속 가능하다는 보장이 아니므로 online=true로 표시하지 않는다.)
+  if (!records.length) throw new Error('PhishingDB: 유효한 URL이 없는 파일입니다.');
   return records;
 }
 
@@ -163,4 +168,4 @@ export async function threatfox({ authKey = '' } = {}) {
     }));
 }
 
-export const FEEDS = { URLhaus: urlhaus, PhishTank: phishtank, OpenPhish: openphish, ThreatFox: threatfox };
+export const FEEDS = { URLhaus: urlhaus, PhishTank: phishtank, PhishingDB: phishingDatabase, ThreatFox: threatfox };

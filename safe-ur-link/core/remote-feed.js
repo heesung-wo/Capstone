@@ -1,7 +1,7 @@
 import { normalizeUrl } from './common.js';
 
 export const SCHEMA_VERSION = 1;
-export const SOURCES = ['URLhaus', 'PhishTank', 'OpenPhish', 'ThreatFox', 'Demo'];
+export const SOURCES = ['URLhaus', 'PhishTank', 'PhishingDB', 'ThreatFox', 'Demo'];
 const SOURCE_SET = new Set(SOURCES);
 const MAX_RECORDS = 300_000;
 

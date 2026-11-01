@@ -31,6 +31,6 @@ export async function all() {
 export async function countBySource() {
   const db = await open(); const st = db.transaction(STORE).objectStore(STORE).index('source');
   const out = {};
-  for (const s of ['URLhaus', 'PhishTank', 'OpenPhish', 'ThreatFox', 'Demo']) out[s] = await reqp(st.count(IDBKeyRange.only(s)));
+  for (const s of ['URLhaus', 'PhishTank', 'PhishingDB', 'ThreatFox', 'Demo']) out[s] = await reqp(st.count(IDBKeyRange.only(s)));
   return out;
 }
