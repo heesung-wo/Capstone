@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { enabledSources, buildFeed } from '../scripts/build-feed.mjs';
+import { enabledSources, buildFeed, pickTop, MAX_PER_SOURCE } from '../scripts/build-feed.mjs';
 import { validateFeed } from '../core/remote-feed.js';
 
 test('모든 스위치가 꺼져 있으면 어떤 소스도 공개하지 않는다', () => {
@@ -53,4 +53,51 @@ test('모든 소스가 정상이지만 결과가 비어 있으면 emptyDataset�
   const feed = await buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_THREATFOX: 'true' }, { collectors });
   assert.equal(feed.emptyDataset, true);
   validateFeed(feed);
+});
+
+test('건수가 매우 많아도 호출 스택이 넘치지 않고 소스별 상한(10,000)만 남는다 (회귀 테스트)', async () => {
+  const rows = Array.from({ length: 200_000 }, (_, i) => ({ url: `https://bad${i}.invalid/x`, meta: { online: i % 2 === 0 } }));
+  const feed = await buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_URLHAUS: 'true' }, { collectors: { URLhaus: async () => rows } });
+  assert.equal(MAX_PER_SOURCE, 10_000);
+  assert.equal(feed.signatures.length, 10_000);
+});
+
+test('상한은 각 소스에 따로 적용된다', async () => {
+  const mk = tag => Array.from({ length: 15_000 }, (_, i) => ({ url: `https://${tag}${i}.invalid/` }));
+  const feed = await buildFeed(
+    { REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_URLHAUS: 'true', PUBLISH_PHISHTANK: 'true' },
+    { collectors: { URLhaus: async () => mk('u'), PhishTank: async () => mk('p') } }
+  );
+  assert.equal(feed.signatures.filter(s => s.source === 'URLhaus').length, 10_000);
+  assert.equal(feed.signatures.filter(s => s.source === 'PhishTank').length, 10_000);
+});
+
+test('상한을 넘으면 활성 → 검증됨 → 최근 등록 순으로 남긴다', () => {
+  const rows = [
+    { url: 'https://old-offline.invalid/', source: 'URLhaus', meta: { online: false, first_seen: '2026-10-30T00:00:00Z' } },
+    { url: 'https://online-old.invalid/', source: 'URLhaus', meta: { online: true, first_seen: '2026-01-01T00:00:00Z' } },
+    { url: 'https://online-new.invalid/', source: 'URLhaus', meta: { online: true, first_seen: '2026-10-01T00:00:00Z' } },
+    { url: 'https://online-verified.invalid/', source: 'URLhaus', meta: { online: true, verified: true, first_seen: '2025-01-01T00:00:00Z' } }
+  ];
+  assert.deepEqual(pickTop(rows, 3).map(r => r.url),
+    ['https://online-verified.invalid/', 'https://online-new.invalid/', 'https://online-old.invalid/']);
+});
+
+test('상한 이하이면 순서와 내용을 그대로 유지한다', () => {
+  const rows = [{ url: 'https://a.invalid/', source: 'X', meta: {} }, { url: 'https://b.invalid/', source: 'X', meta: {} }];
+  assert.equal(pickTop(rows, 10), rows);
+});
+
+test('MAX_PER_SOURCE 환경변수로 상한을 바꿀 수 있다', async () => {
+  const rows = Array.from({ length: 50 }, (_, i) => ({ url: `https://e${i}.invalid/` }));
+  const feed = await buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_URLHAUS: 'true', MAX_PER_SOURCE: '20' }, { collectors: { URLhaus: async () => rows } });
+  assert.equal(feed.signatures.length, 20);
+});
+
+test('전체 한도(30만 건)는 안전장치로 남아 있고 소스별 건수를 알려준다', async () => {
+  const rows = Array.from({ length: 300_001 }, (_, i) => ({ url: `https://z${i}.invalid/` }));
+  await assert.rejects(
+    buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_URLHAUS: 'true', MAX_PER_SOURCE: '1000000' }, { collectors: { URLhaus: async () => rows } }),
+    /URLhaus 300001건/
+  );
 });
