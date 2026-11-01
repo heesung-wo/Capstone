@@ -49,6 +49,19 @@ function slimMeta(m = {}) {
   return meta;
 }
 
+// 한 소스의 원본 행을 정규화·중복 제거하고 비민감 메타만 남긴다.
+export function normalizeRows(source, rows) {
+  const seen = new Set();
+  const out = [];
+  for (const row of rows || []) {
+    const url = normalizeUrl(row?.url);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    out.push({ url, source, meta: slimMeta(row.meta || {}) });
+  }
+  return out;
+}
+
 function demoSignatures(now) {
   const first_seen = new Date(now).toISOString();
   return ['https://malware.test/demo', 'https://phishing.test/login'].map(url => ({
