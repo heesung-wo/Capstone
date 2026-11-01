@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # UTC 03:17 = KST 12:17, 하루 한 번(예약 작업은 지연될 수 있음)
-    - cron: '17 3 * * *'
+    - cron: '17 */6 * * *'
   push:
     branches: [main]
     paths:
