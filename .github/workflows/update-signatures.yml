@@ -35,6 +35,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Determine UTC date for PhishTank cache
+        id: utc_date
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache PhishTank public feed for the day
+        uses: actions/cache@v4
+        with:
+          path: safe-ur-link/.cache/phishtank-daily.json
+          key: phishtank-public-${{ steps.utc_date.outputs.day }}
 
       - name: Test
         run: npm test
