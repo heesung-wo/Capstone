@@ -4,7 +4,7 @@
 
 export const REFRESH_MS = Object.freeze({
   URLhaus: 60 * 60_000,       // 공식 최소 5분보다 여유 있게 1시간
-  PhishTank: 60 * 60_000,     // 인증된 경우: 원본 데이터가 1시간마다 갱신
+  PhishTank: 24 * 60 * 60_000, // 비인증 공개 피드는 하루 한 번만 수집
   PhishingDB: 6 * 60 * 60_000,
   ThreatFox: 6 * 60 * 60_000
 });
@@ -101,31 +101,103 @@ export async function urlhaus({ authKey = '' } = {}) {
   return records;
 }
 
-export async function phishtank({ phishKey = '', userAgent = '' } = {}) {
-  const key = phishKey.trim();
-  const endpoint = key
-    ? `https://data.phishtank.com/data/${encodeURIComponent(key)}/online-valid.json`
-    : 'https://data.phishtank.com/data/online-valid.json';
-  // PhishTank는 식별 가능한 User-Agent를 요구한다. 서버(Node/Actions)에서 실행할 때만 지정할 수 있다.
-  const response = await getResponse(endpoint, userAgent ? { headers: { 'User-Agent': userAgent } } : {});
-  const text = await response.text();
+// PhishTank: 키 없이 이용 가능한 공식 공개 피드 다운로드.
+// 공식 정책은 "하루 몇 차례" (정확한 횟수 비공개). Actions는 하루 1회 실행하고,
+// 같은 UTC 날짜에 재실행할 경우 scripts/build-feed.mjs의 파일 캐시를 재사용한다.
+// 압축 CSV를 우선 사용한다. 404일 때만 압축 JSON으로 한 번 대체하여 불필요한 호출을 피한다.
+// 429/509(호출 제한), 403 등의 응답에서 자동 재시도를 하지 않는다.
+export const PHISHTANK_PUBLIC_CSV_GZ = 'https://data.phishtank.com/data/online-valid.csv.gz';
+export const PHISHTANK_PUBLIC_JSON_GZ = 'https://data.phishtank.com/data/online-valid.json.gz';
+
+async function readGzipOrPlain(response) {
+  // fetch가 Content-Encoding을 자동 해제한 경우도 고려한다.
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return await new Response(stream).text();
+  }
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
+function isYes(value) {
+  return value === true || /^(yes|true|y|1)$/i.test(String(value ?? '').trim());
+}
+
+function parsePhishTankCSV(text) {
+  assertNotHtml(text, 'PhishTank');
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(s => s.trim());
+  const header = csvLine(lines.shift() || '').map(s => s.toLowerCase().trim());
+  const urlIdx = header.indexOf('url');
+  const verifiedIdx = header.indexOf('verified');
+  const onlineIdx = header.indexOf('online');
+  if (urlIdx < 0 || verifiedIdx < 0 || onlineIdx < 0) {
+    throw new Error('PhishTank: CSV 필수 열(url, verified, online)을 찾지 못했습니다.');
+  }
+  const idx = key => header.indexOf(key);
+  const read = (cols, key) => {
+    const i = idx(key);
+    return i < 0 ? '' : (cols[i] || '').trim();
+  };
+  const records = [];
+  for (const line of lines) {
+    const cols = csvLine(line);
+    const url = (cols[urlIdx] || '').trim();
+    // 다운로드 피드는 공식적으로 검증 완료 및 온라인 URL만 포함한다.
+    if (!validHttpURL(url) || !isYes(cols[verifiedIdx]) || !isYes(cols[onlineIdx])) continue;
+    records.push({
+      url,
+      meta: {
+        verified: true,
+        online: true,
+        threat: 'phishing',
+        target: read(cols, 'target') || undefined,
+        first_seen: dateISO(read(cols, 'submission_time')),
+        verified_at: dateISO(read(cols, 'verification_time'))
+      }
+    });
+  }
+  if (!records.length) throw new Error('PhishTank: 유효한 검증·활성 피싱 URL이 없는 CSV입니다.');
+  return records;
+}
+
+function parsePhishTankJSON(text) {
   assertNotHtml(text, 'PhishTank');
   let data;
   try { data = JSON.parse(text); } catch { throw new Error('PhishTank: 유효한 JSON이 아닙니다.'); }
   if (!Array.isArray(data)) throw new Error('PhishTank: JSON 배열이 아닙니다.');
-  const records = data.filter(e => e && validHttpURL(e.url)).map(e => ({
-    url: e.url,
-    meta: {
-      verified: e.verified === 'yes' || e.verified === true,
-      online: e.online === 'yes' || e.online === true,
-      threat: 'phishing',
-      target: e.target || undefined,
-      first_seen: dateISO(e.submission_time),
-      verified_at: dateISO(e.verification_time)
-    }
-  }));
-  if (!records.length) throw new Error('PhishTank: 유효한 URL이 없는 JSON입니다.');
+  const records = data.filter(e => e && validHttpURL(e.url) && isYes(e.verified) && isYes(e.online))
+    .map(e => ({
+      url: e.url,
+      meta: {
+        verified: true,
+        online: true,
+        threat: 'phishing',
+        target: e.target || undefined,
+        first_seen: dateISO(e.submission_time),
+        verified_at: dateISO(e.verification_time)
+      }
+    }));
+  if (!records.length) throw new Error('PhishTank: 유효한 검증·활성 피싱 URL이 없는 JSON입니다.');
   return records;
+}
+
+export async function phishtank({ userAgent = '' } = {}) {
+  // 익명 피드는 HTTP header의 User-Agent가 필수적으로 중요하다.
+  const headers = { 'User-Agent': userAgent || 'phishtank/safe-ur-link-capstone' };
+  let response;
+  try {
+    response = await getResponse(PHISHTANK_PUBLIC_CSV_GZ, {
+      headers, signal: AbortSignal.timeout(90_000)
+    });
+  } catch (error) {
+    if (error?.httpStatus !== 404) throw new Error(`PhishTank: 공개 CSV 피드 요청 실패 — ${error?.message || error}`);
+    console.warn('PhishTank: 공개 CSV가 HTTP 404를 반환하여 공식 공개 JSON gzip을 한 번 시도합니다.');
+    response = await getResponse(PHISHTANK_PUBLIC_JSON_GZ, {
+      headers, signal: AbortSignal.timeout(90_000)
+    });
+    return parsePhishTankJSON(await readGzipOrPlain(response));
+  }
+  return parsePhishTankCSV(await readGzipOrPlain(response));
 }
 
 // Phishing.Database (MIT 라이선스). 기본 피드에 장애/차단이 생기면 같은 프로젝트의 GitHub 원본 파일로 대체한다.

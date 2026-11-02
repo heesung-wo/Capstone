@@ -196,3 +196,22 @@ test('수집 실패 소스 목록은 검증하며 임의의 소스를 건너뛰�
   assert.throws(() => validateFeed({ ...feed, unavailableSources: ['PhishingDB', 'PhishingDB'] }), /수집 실패 소스 목록/);
   assert.throws(() => validateFeed({ ...feed, unavailableSources: ['Demo'] }), /수집 실패 소스 목록/);
 });
+
+test('PhishTank 하루 캐시는 UTC 날짜가 같을 때만 재사용한다', async () => {
+  const { readPhishtankDailyCache, writePhishtankDailyCache } = await import('../scripts/build-feed.mjs');
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'phishtank-cache-test-'));
+  const path = join(dir, 'daily.json');
+  const day = '2030-02-03';
+  const record = [{url: 'https://cached.invalid/login', meta: {verified: true, online: true}}];
+  try {
+    assert.equal(await readPhishtankDailyCache(day, path), null);
+    await writePhishtankDailyCache(day, record, path);
+    assert.deepEqual(await readPhishtankDailyCache(day, path), record);
+    assert.equal(await readPhishtankDailyCache('2030-02-04', path), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

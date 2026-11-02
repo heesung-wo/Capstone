@@ -1,11 +1,11 @@
 // GitHub Actions에서 실행되는 시그니처 수집 스크립트.
 // 비밀 키는 환경변수로만 읽고, 결과물(public/signatures.json)에는 URL과 최소 메타데이터만 담는다.
 //   ABUSE_CH_AUTH_KEY  : URLhaus / ThreatFox
-//   PHISHTANK_KEY      : PhishTank (선택)
+//   PhishTank         : API 키 없이 일 1회 공개 CSV.gz 다운로드 (actions/cache 권장)
 //   PHISHTANK_USER_AGENT : PhishTank 요청에 쓸 식별 가능한 User-Agent
 //   PUBLISH_* / REDISTRIBUTION_CONFIRMED : 소스별 공개 재배포 허용 스위치 (URLHAUS, THREATFOX, PHISHTANK, PHISHING_DB)
 import { createHash } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeUrl } from '../core/common.js';
@@ -43,14 +43,40 @@ export const NOTICES = {
   }
 };
 
+// GitHub Actions의 actions/cache로 같은 UTC 날짜의 PhishTank 수집 결과를 재사용한다.
+// 최초 성공 실행에서 .cache/phishtank-daily.json을 생성한 후 일별 키로 보관한다.
+const PHISHTANK_DAILY_CACHE = fileURLToPath(new URL('../.cache/phishtank-daily.json', import.meta.url));
+
+export async function readPhishtankDailyCache(day, cacheFile = PHISHTANK_DAILY_CACHE) {
+  try {
+    const cached = JSON.parse(await readFile(cacheFile, 'utf8'));
+    if (cached?.utcDay !== day || !Array.isArray(cached.records) || !cached.records.length) return null;
+    return cached.records;
+  } catch { return null; }
+}
+
+export async function writePhishtankDailyCache(day, records, cacheFile = PHISHTANK_DAILY_CACHE) {
+  await mkdir(path.dirname(cacheFile), { recursive: true });
+  await writeFile(cacheFile, JSON.stringify({ utcDay: day, records }));
+}
+
 export function defaultCollectors(env = {}) {
   return {
     URLhaus: () => urlhaus({ authKey: env.ABUSE_CH_AUTH_KEY || '' }),
     ThreatFox: () => threatfox({ authKey: env.ABUSE_CH_AUTH_KEY || '' }),
-    PhishTank: () => phishtank({
-      phishKey: env.PHISHTANK_KEY || '',
-      userAgent: env.PHISHTANK_USER_AGENT || 'safe-ur-link-feed-builder'
-    }),
+    PhishTank: async () => {
+      const day = new Date().toISOString().slice(0, 10);
+      const cached = await readPhishtankDailyCache(day);
+      if (cached) {
+        console.log(`PhishTank: UTC ${day} 캐시 재사용 — 외부 다운로드 생략 (${cached.length.toLocaleString()}건)`);
+        return cached;
+      }
+      const records = await phishtank({
+        userAgent: env.PHISHTANK_USER_AGENT || 'phishtank/safe-ur-link-capstone (+https://github.com/heesung-wo/Capstone)'
+      });
+      await writePhishtankDailyCache(day, records);
+      return records;
+    },
     PhishingDB: () => phishingDatabase({ userAgent: env.FEED_USER_AGENT || 'safe-ur-link-feed-builder (+https://github.com/heesung-wo/Capstone)' })
   };
 }
@@ -105,7 +131,7 @@ export async function buildFeed(env = {}, { collectors = defaultCollectors(env),
   const seed = new Date(now).toISOString().slice(0, 10);   // 표본 선택용 날짜 시드 (UTC)
   const enabled = enabledSources(env);
   const names = Object.keys(enabled).filter(n => enabled[n]);
-  const secrets = [env.ABUSE_CH_AUTH_KEY, env.PHISHTANK_KEY].filter(Boolean);
+  const secrets = [env.ABUSE_CH_AUTH_KEY].filter(Boolean);
   const redact = msg => secrets.reduce((s, k) => s.split(k).join('***'), String(msg));
   // OPTIONAL_SOURCES(쉼표로 구분)에 적은 소스는 수집에 실패해도 나머지 소스만으로 배포한다.
   // 단, 실패한 소스의 데이터는 그날 피드에서 빠지므로 확장 프로그램에서도 해당 소스 데이터가 비워진다.
