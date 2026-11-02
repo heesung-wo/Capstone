@@ -171,6 +171,8 @@ test('선택 소스가 실패해도 나머지로 배포하고, 실패한 소스�
   const feed = await buildFeed({ ...ENV, OPTIONAL_SOURCES: 'PhishingDB' }, { collectors, sleep: noSleep, log: m => logs.push(m) });
   assert.deepEqual(feed.signatures.map(s => s.source), ['URLhaus']);
   assert.equal(feed.notices, undefined);
+  assert.deepEqual(feed.unavailableSources, ['PhishingDB']);
+  assert.deepEqual(validateFeed(feed).unavailableSources, ['PhishingDB']);
   assert.ok(logs.some(m => /경고: PhishingDB/.test(m)));
 });
 
@@ -185,4 +187,12 @@ test('선택 소스만 켰는데 전부 실패하면 빈 피드로 덮어쓰지 
     buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_PHISHING_DB: 'true', OPTIONAL_SOURCES: 'PhishingDB' }, { collectors, sleep: noSleep }),
     /성공한 소스가 없어/
   );
+});
+
+
+test('수집 실패 소스 목록은 검증하며 임의의 소스를 건너뛰지 못하게 한다', async () => {
+  const feed = await buildFeed({});
+  assert.throws(() => validateFeed({ ...feed, unavailableSources: ['Unknown'] }), /수집 실패 소스 목록/);
+  assert.throws(() => validateFeed({ ...feed, unavailableSources: ['PhishingDB', 'PhishingDB'] }), /수집 실패 소스 목록/);
+  assert.throws(() => validateFeed({ ...feed, unavailableSources: ['Demo'] }), /수집 실패 소스 목록/);
 });

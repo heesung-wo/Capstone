@@ -125,6 +125,7 @@ export async function buildFeed(env = {}, { collectors = defaultCollectors(env),
   const counts = {};
   const failures = [];
   const warnings = [];
+  const unavailableSources = [];
   const succeeded = [];
   if (!names.length) {
     log('공개가 허용된 소스가 없어 시연용(.test) 데이터만 생성합니다.');
@@ -143,7 +144,7 @@ export async function buildFeed(env = {}, { collectors = defaultCollectors(env),
         log(`${name}: ${rows.length}건`);
       } catch (e) {
         const msg = `${name}: ${redact(e?.message || e)}`;
-        if (optional.has(name)) { warnings.push(msg); log(`경고: ${msg} — 선택 소스이므로 이번 배포에서는 제외합니다.`); }
+        if (optional.has(name)) { warnings.push(msg); unavailableSources.push(name); log(`경고: ${msg} — 선택 소스이므로 이번 배포에서는 제외합니다.`); }
         else failures.push(msg);
       }
     }
@@ -162,6 +163,8 @@ export async function buildFeed(env = {}, { collectors = defaultCollectors(env),
     schema: SCHEMA_VERSION,
     generatedAt: new Date(now).toISOString(),
     signatures,
+    // 수집 실패한 선택 소스의 이름만 기록해 확장 프로그램이 기존 마지막 정상 데이터를 지우지 않게 한다.
+    ...(unavailableSources.length ? { unavailableSources } : {}),
     ...(succeeded.some(n => NOTICES[n]) ? { notices: succeeded.filter(n => NOTICES[n]).map(n => ({ source: n, ...NOTICES[n] })) } : {}),
     ...(signatures.length ? {} : { emptyDataset: true })
   };

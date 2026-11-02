@@ -19,6 +19,14 @@ export function validateFeed(data) {
   if (!data.signatures.length && data.emptyDataset !== true) {
     throw new Error('빈 시그니처 데이터입니다. 이전 데이터베이스를 유지합니다.');
   }
+  // 배포본에 누락된 소스가 '비활성화'되었는지 '일시적 수집 실패'인지 구분한다.
+  const unavailableSources = data.unavailableSources ?? [];
+  if (!Array.isArray(unavailableSources) || unavailableSources.some(
+    s => typeof s !== 'string' || s === 'Demo' || !SOURCE_SET.has(s)
+  ) || new Set(unavailableSources).size !== unavailableSources.length) {
+    throw new Error('수집 실패 소스 목록이 올바르지 않습니다.');
+  }
+  const unavailable = new Set(unavailableSources);
   const seen = new Set();
   const records = [];
   for (const row of data.signatures) {
@@ -30,6 +38,7 @@ export function validateFeed(data) {
     if (row.source === 'Demo' && !new URL(url).hostname.endsWith('.test')) {
       throw new Error('시연용 시그니처는 .test 주소만 허용합니다.');
     }
+    if (unavailable.has(row.source)) throw new Error('수집 실패로 표기된 소스에 레코드가 존재합니다.');
     const id = `${row.source}|${url}`;
     if (seen.has(id)) continue;
     seen.add(id);
@@ -45,7 +54,7 @@ export function validateFeed(data) {
     records.push({ url, source: row.source, meta });
   }
   if (!records.length && data.emptyDataset !== true) throw new Error('유효한 시그니처가 없습니다.');
-  return { generatedAt: new Date(ms).toISOString(), records, demoOnly: records.every(r => r.source === 'Demo') };
+  return { generatedAt: new Date(ms).toISOString(), records, demoOnly: records.every(r => r.source === 'Demo'), unavailableSources };
 }
 
 export async function downloadFeed(url, fetchFn = fetch) {

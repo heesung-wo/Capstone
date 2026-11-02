@@ -23,6 +23,7 @@ async function status() {
   $('tbl').innerHTML = rows.join('') || '<tr><td class="muted">아직 업데이트하지 않았습니다.</td></tr>';
   const notes = [];
   if (m.demoOnly) notes.push('현재 시연용 데이터(.test 주소)만 포함되어 있어 실제 악성 URL은 탐지하지 않습니다.');
+  if (m.unavailableSources?.length) notes.push(`${m.unavailableSources.join(', ')} 수집에 실패하여 이전에 저장한 데이터가 있으면 유지 중입니다. 처음 설치했다면 해당 소스가 0건일 수 있습니다.`);
   if (m.generatedAt && Date.now() - Date.parse(m.generatedAt) > STALE_MS) notes.push('공개된 데이터가 3일 이상 갱신되지 않았습니다.');
   $('note').textContent = notes.join(' ');
 }

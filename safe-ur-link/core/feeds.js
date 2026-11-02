@@ -128,20 +128,41 @@ export async function phishtank({ phishKey = '', userAgent = '' } = {}) {
   return records;
 }
 
-// Phishing.Database (MIT 라이선스). 공식 데이터 파일은 phish.co.za 에서 제공한다.
-// 프로젝트가 직접 HTTP 상태를 점검해 분류한 "ACTIVE(또는 아직 활성일 수 있는)" 링크 목록이다.
+// Phishing.Database (MIT 라이선스). 기본 피드에 장애/차단이 생기면 같은 프로젝트의 GitHub 원본 파일로 대체한다.
+// 주의: GitHub 원본 파일은 수십 MB 이상이므로 일 단위 배치 수집 환경에서만 사용한다.
 export const PHISHING_DB_URL = 'https://phish.co.za/latest/phishing-links-ACTIVE.txt';
-export async function phishingDatabase({ userAgent = '' } = {}) {
-  const response = await getResponse(PHISHING_DB_URL, userAgent ? { headers: { 'User-Agent': userAgent } } : {});
-  const text = await response.text();
+export const PHISHING_DB_FALLBACK_URL = 'https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-links-ACTIVE.txt';
+
+function parsePhishingDB(text) {
   assertNotHtml(text, 'PhishingDB');
-  // 한 줄에 URL 하나. 이 파일은 같은 링크가 중복으로 들어간 적이 있어서 이후 단계(normalizeRows)에서 중복을 제거한다.
-  const records = text.split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('#') && validHttpURL(s))
+  // URL 1개/줄. 주석, 빈 줄, http/https 이외의 행은 제외한다.
+  const records = text.split(/\r?\n/).map(s => s.trim())
+    .filter(s => s && !s.startsWith('#') && validHttpURL(s))
     .map(url => ({ url, meta: { threat: 'phishing' } }));
-  // 이 목록은 등록 시각과 검증 여부를 제공하지 않으므로 first_seen/verified/online을 임의로 만들지 않는다.
-  // ("ACTIVE"는 프로젝트의 점검 결과일 뿐, 지금 이 순간 접속 가능하다는 보장이 아니므로 online=true로 표시하지 않는다.)
   if (!records.length) throw new Error('PhishingDB: 유효한 URL이 없는 파일입니다.');
+  // ACTIVE는 공급자의 점검 결과이며 지금 당장 온라인이라는 보장이 아니다.
   return records;
+}
+
+export async function phishingDatabase({ userAgent = '' } = {}) {
+  const headers = userAgent ? { 'User-Agent': userAgent } : undefined;
+  const endpoints = [
+    { label: '공식 피드', url: PHISHING_DB_URL, timeoutMs: 45_000 },
+    { label: 'GitHub 원본', url: PHISHING_DB_FALLBACK_URL, timeoutMs: 120_000 }
+  ];
+  const errors = [];
+  for (const { label, url, timeoutMs } of endpoints) {
+    try {
+      const response = await getResponse(url, { ...(headers ? { headers } : {}), signal: AbortSignal.timeout(timeoutMs) });
+      const records = parsePhishingDB(await response.text());
+      if (errors.length) console.warn(`PhishingDB: 대체 수집 경로(${label})에서 ${records.length.toLocaleString()}건을 확보했습니다.`);
+      return records;
+    } catch (error) {
+      errors.push(`${label}: ${error?.message || error}`);
+      console.warn(`PhishingDB: ${label} 다운로드 실패 (${error?.message || error})`);
+    }
+  }
+  throw new Error(`PhishingDB: 기본 및 대체 피드 모두 실패 — ${errors.join(' / ')}`);
 }
 
 export async function threatfox({ authKey = '' } = {}) {

@@ -50,12 +50,18 @@ async function performSync(force) {
     if (feed.generatedAt !== feedMeta.generatedAt || !hasData) {
       const bySource = Object.fromEntries(SOURCES.map(n => [n, []]));
       for (const r of feed.records) bySource[r.source].push({ url: r.url, meta: r.meta });
-      for (const n of SOURCES) await db.replaceSource(n, bySource[n]);   // 피드에 없는 소스는 비운다
+      // 선택 소스 수집 실패는 '데이터 0건'이 아니다. 이전 정상 수집분이 있으면 보존한다.
+      // 반면 설정에서 비활성화된 소스는 기존 동작대로 비운다.
+      const unavailable = new Set(feed.unavailableSources || []);
+      for (const n of SOURCES) {
+        if (!unavailable.has(n)) await db.replaceSource(n, bySource[n]);
+      }
       changed = true;
     }
     await chrome.storage.local.set({ feedMeta: {
       generatedAt: feed.generatedAt, lastAttempt: now, lastSuccess: Date.now(),
-      nextAt: Date.now() + REFRESH_INTERVAL_MS, count: feed.records.length, demoOnly: feed.demoOnly
+      nextAt: Date.now() + REFRESH_INTERVAL_MS, count: feed.records.length, demoOnly: feed.demoOnly,
+      unavailableSources: feed.unavailableSources || []
     } });
     let ruleError;
     if (changed || feedMeta.ruleError) {

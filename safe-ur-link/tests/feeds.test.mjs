@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { urlhaus, phishtank, phishingDatabase, threatfox, REFRESH_MS, PHISHTANK_ANONYMOUS_MS, PHISHING_DB_URL } from '../core/feeds.js';
+import { urlhaus, phishtank, phishingDatabase, threatfox, REFRESH_MS, PHISHTANK_ANONYMOUS_MS, PHISHING_DB_URL, PHISHING_DB_FALLBACK_URL } from '../core/feeds.js';
 
 function mock(body, status = 200, headers = {}) {
   return async (url, init = {}) => {
@@ -106,4 +106,25 @@ test('PhishTank sends custom User-Agent only when provided (server-side build)',
   assert.equal(lastRequest.init.headers['User-Agent'], 'phishtank/test-user');
   await phishtank({});
   assert.equal(lastRequest.init.headers, undefined);
+});
+
+
+test('PhishingDB: 공식 피드가 403이면 GitHub 원본으로 대체한다', async () => {
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(url);
+    if (url === PHISHING_DB_URL) return new Response('Access Denied', {status: 403});
+    if (url === PHISHING_DB_FALLBACK_URL) return new Response('https://backup.invalid/login\n# comment\n');
+    throw new Error('예상하지 못한 URL');
+  };
+  const items = await phishingDatabase();
+  assert.deepEqual(urls, [PHISHING_DB_URL, PHISHING_DB_FALLBACK_URL]);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].url, 'https://backup.invalid/login');
+  assert.equal(items[0].meta.online, undefined);
+});
+
+test('PhishingDB: 두 피드 모두 실패하면 원인과 경로를 알 수 있도록 오류 처리', async () => {
+  globalThis.fetch = async (url) => new Response('error', { status: url === PHISHING_DB_URL ? 503 : 404 });
+  await assert.rejects(phishingDatabase(), /공식 피드: HTTP 503.*GitHub 원본: HTTP 404/);
 });
