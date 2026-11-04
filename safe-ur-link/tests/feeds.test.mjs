@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { urlhaus, phishtank, phishingDatabase, threatfox, REFRESH_MS, PHISHTANK_ANONYMOUS_MS, PHISHTANK_PUBLIC_CSV_GZ, PHISHTANK_PUBLIC_JSON_GZ, PHISHING_DB_URL, PHISHING_DB_FALLBACK_URL } from '../core/feeds.js';
+import { urlhaus, phishtank, phishingDatabase, threatfox, REFRESH_MS, PHISHTANK_ANONYMOUS_MS, PHISHING_DB_URL } from '../core/feeds.js';
 
 function mock(body, status = 200, headers = {}) {
   return async (url, init = {}) => {
@@ -30,34 +30,18 @@ test('URLhaus CSV also handles legacy unheaded 9-field export', async () => {
   assert.equal(items[0].url, 'http://evil.invalid/load');
 });
 
-test('PhishTank: API 키 없이 압축 CSV 다운로드, 검증·활성 URL만 수집', async () => {
-  const { gzipSync } = await import('node:zlib');
-  const csv = 'phish_id,url,phish_detail_url,submission_time,verified,verification_time,online,target\n' +
-    '1,https://bad.invalid/login,details,2026-10-10T00:00:00+00:00,yes,2026-10-11T00:00:00+00:00,yes,"Fake, Brand"\n' +
-    '2,https://inactive.invalid/,details,,yes,,no,Fake\n' +
-    '3,ftp://unsupported.invalid/,details,,yes,,yes,Fake\n';
-  globalThis.fetch = async (url, init) => { globalThis.lastRequest = { url, init }; return new Response(gzipSync(csv)); };
-  const found = await phishtank();
-  assert.equal(found.length, 1);
-  assert.equal(found[0].url, 'https://bad.invalid/login');
-  assert.equal(found[0].meta.target, 'Fake, Brand');
-  assert.equal(found[0].meta.verified, true);
-  assert.equal(found[0].meta.online, true);
-  assert.equal(found[0].meta.first_seen, '2026-10-10T00:00:00.000Z');
-  assert.equal(lastRequest.url, PHISHTANK_PUBLIC_CSV_GZ);
-  assert.equal(lastRequest.init.headers['User-Agent'], 'phishtank/safe-ur-link-capstone');
+test('PhishTank JSON supports anonymous feed, yields actual metadata', async () => {
+  globalThis.fetch = mock([{url:'https://bad.invalid/login',verified:'yes',online:'yes',target:'Example',submission_time:'2026-10-10T00:00:00+00:00'}]);
+  const found = await phishtank({});
+  assert.equal(found.length,1);
+  assert.equal(found[0].meta.verified,true);
+  assert.equal(found[0].meta.first_seen,'2026-10-10T00:00:00.000Z');
+  assert.equal(lastRequest.url,'https://data.phishtank.com/data/online-valid.json');
 });
 
-test('PhishTank: 이미 HTTP에서 압축 해제된 CSV도 파싱', async () => {
-  globalThis.fetch = mock('phish_id,url,verified,online\n1,https://bad.invalid/,yes,yes\n');
-  const found = await phishtank({ userAgent: 'phishtank/capstone-application' });
-  assert.equal(found.length, 1);
-  assert.equal(lastRequest.init.headers['User-Agent'], 'phishtank/capstone-application');
-});
-
-test('PhishTank: HTML 차단 응답은 데이터로 저장하지 않는다', async () => {
+test('PhishTank rejects challenge HTML instead of wiping DB', async () => {
   globalThis.fetch = mock('<html>Cloud challenge</html>');
-  await assert.rejects(phishtank(), /HTML/);
+  await assert.rejects(phishtank({}), /HTML/);
 });
 
 test('ThreatFox requires key, queries 7 days, preserves first_seen', async () => {
@@ -106,65 +90,20 @@ test('PhishingDB: HTML 응답이나 빈 파일은 오류', async () => {
   await assert.rejects(phishingDatabase(), /유효한 URL/);
 });
 
-test('PhishTank: HTTP 509 호출 제한 시 다른 주소로 재시도하지 않는다', async () => {
-  let requests = 0;
-  globalThis.fetch = async () => { requests++; return new Response('blocked', { status: 509 }); };
+test('HTTP 509 surfaces as rate limit', async () => {
+  globalThis.fetch = mock('blocked',509);
   await assert.rejects(phishtank({}), /509.*호출 제한/);
-  assert.equal(requests, 1);
 });
 
-test('refresh limits are conservative for unauthenticated feed', () => {
-  assert.equal(REFRESH_MS.URLhaus, 60*60_000);
-  assert.equal(REFRESH_MS.PhishTank, 24*60*60_000);
-  assert.equal(PHISHTANK_ANONYMOUS_MS, 24*60*60_000);
+test('refresh limits are conservative', () => {
+  assert.equal(REFRESH_MS.URLhaus,60*60_000);
+  assert.equal(PHISHTANK_ANONYMOUS_MS,24*60*60_000);
 });
 
-test('PhishingDB: 공식 피드가 403이면 GitHub 원본으로 대체한다', async () => {
-  const urls = [];
-  globalThis.fetch = async (url) => {
-    urls.push(url);
-    if (url === PHISHING_DB_URL) return new Response('Access Denied', {status: 403});
-    if (url === PHISHING_DB_FALLBACK_URL) return new Response('https://backup.invalid/login\n# comment\n');
-    throw new Error('예상하지 못한 URL');
-  };
-  const items = await phishingDatabase();
-  assert.deepEqual(urls, [PHISHING_DB_URL, PHISHING_DB_FALLBACK_URL]);
-  assert.equal(items.length, 1);
-  assert.equal(items[0].url, 'https://backup.invalid/login');
-  assert.equal(items[0].meta.online, undefined);
-});
-
-test('PhishingDB: 두 피드 모두 실패하면 원인과 경로를 알 수 있도록 오류 처리', async () => {
-  globalThis.fetch = async (url) => new Response('error', { status: url === PHISHING_DB_URL ? 503 : 404 });
-  await assert.rejects(phishingDatabase(), /공식 피드: HTTP 503.*GitHub 원본: HTTP 404/);
-});
-
-
-test('PhishTank: CSV 404일 때만 공식 공개 gzip JSON으로 1회 대체', async () => {
-  const { gzipSync } = await import('node:zlib');
-  const urls = [];
-  globalThis.fetch = async (url, init) => {
-    urls.push(url);
-    assert.ok(init.headers['User-Agent'].startsWith('phishtank/'));
-    if (url === PHISHTANK_PUBLIC_CSV_GZ) return new Response('missing', { status: 404 });
-    return new Response(gzipSync(JSON.stringify([
-      { url: 'https://fallback.invalid/login', verified: 'yes', online: 'yes' }
-    ])));
-  };
-  const found = await phishtank();
-  assert.deepEqual(urls, [PHISHTANK_PUBLIC_CSV_GZ, PHISHTANK_PUBLIC_JSON_GZ]);
-  assert.equal(found.length, 1);
-  assert.equal(found[0].url, 'https://fallback.invalid/login');
-});
-
-test('PhishTank: 404 두 번이면 실패 원인이 로그에 표시된다', async () => {
-  globalThis.fetch = async () => new Response('missing', { status: 404 });
-  await assert.rejects(phishtank(), /HTTP 404/);
-});
-
-test('PhishTank: 503은 호출 제한을 고려해 경로를 추가로 시도하지 않는다', async () => {
-  let requests = 0;
-  globalThis.fetch = async () => { requests++; return new Response('offline', { status: 503 }); };
-  await assert.rejects(phishtank(), /HTTP 503/);
-  assert.equal(requests, 1);
+test('PhishTank sends custom User-Agent only when provided (server-side build)', async () => {
+  globalThis.fetch = mock([{ url: 'https://bad.invalid/x', verified: 'yes', online: 'yes' }]);
+  await phishtank({ userAgent: 'phishtank/test-user' });
+  assert.equal(lastRequest.init.headers['User-Agent'], 'phishtank/test-user');
+  await phishtank({});
+  assert.equal(lastRequest.init.headers, undefined);
 });

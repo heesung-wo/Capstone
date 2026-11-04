@@ -2,15 +2,13 @@ import { normalizeUrl, hostOf, heuristics, externalScore, verdictOf } from '../c
 import * as db from '../core/db.js';
 import { SIGNATURE_FEED_URL, REFRESH_INTERVAL_MS } from '../core/config.js';
 import { downloadFeed, SOURCES } from '../core/remote-feed.js';
+import { buildProtectionRules, hostMatches, DEMO_SIGNATURES, sessionAllowCondition } from '../core/dnr.js';
 
 const DEFAULTS = { realtime: true, allow: [], block: [] };
 const RETRY_MS = 60 * 60_000, MANUAL_COOLDOWN_MS = 60_000;
-const USER_BASE = 100000;
-// redirect 규칙은 Chrome이 'unsafe' 동적 규칙으로 분류해 5,000개로 제한한다 (사용자 차단 목록도 같은 한도를 쓴다).
-const UNSAFE_RULE_LIMIT = () => chrome.declarativeNetRequest.MAX_NUMBER_OF_UNSAFE_DYNAMIC_RULES || 5000;
+// 다운로드된 악성 시그니처는 block, 사용자 차단 도메인만 redirect (Chrome 121+ 총 30,000개 한도).
 const getSettings = async () => ({ ...DEFAULTS, ...(await chrome.storage.local.get(Object.keys(DEFAULTS))) });
-const warnUrl = u => chrome.runtime.getURL('pages/warning/warning.html') + '?u=' + encodeURIComponent(u);
-const main = { resourceTypes: ['main_frame'] };
+const WARNING_PAGE = 'pages/warning/warning.html';
 
 // ── URL 검사: 정규화 → 사용자 목록 → 로컬 DB → 외부 평가 → 휴리스틱 → 판정
 export async function check(raw) {
@@ -18,10 +16,15 @@ export async function check(raw) {
   if (!url) return { error: 'http/https URL만 검사할 수 있습니다.' };
   const host = hostOf(url), s = await getSettings();
   const base = { url, host, checkedAt: Date.now() };
-  if (s.allow.includes(host)) return { ...base, verdict: 'No Threat Detected', score: 0, userList: 'allow', sources: [], reasons: [{ points: 0, text: '사용자 허용 목록에 등록된 도메인입니다' }] };
-  if (s.block.includes(host)) return { ...base, verdict: 'Malicious', score: 100, userList: 'block', sources: [], reasons: [{ points: 0, text: '사용자 차단 목록에 등록된 도메인입니다' }] };
+  if (s.allow.some(entry => hostMatches(host, entry))) return { ...base, verdict: 'No Threat Detected', score: 0, userList: 'allow', sources: [], reasons: [{ points: 0, text: '사용자 허용 목록에 등록된 도메인입니다' }] };
+  if (s.block.some(entry => hostMatches(host, entry))) return { ...base, verdict: 'Malicious', score: 100, userList: 'block', sources: [], reasons: [{ points: 0, text: '사용자 차단 목록에 등록된 도메인입니다' }] };
 
   const records = await db.lookup(url);
+  if (DEMO_SIGNATURES.includes(url) && !records.length) {
+    // 실제 피드를 수집한 뒤에는 시연용 내장 URL을 악성 판정하지 않는다.
+    const counts = await db.countBySource();
+    if (!Object.values(counts).some(n => n > 0)) records.push({ source: 'Demo', url, meta: {} });
+  }
   const ext = externalScore(records), heur = heuristics(raw);
   const score = Math.min(ext.score + heur.score, 100);
   return {
@@ -50,18 +53,12 @@ async function performSync(force) {
     if (feed.generatedAt !== feedMeta.generatedAt || !hasData) {
       const bySource = Object.fromEntries(SOURCES.map(n => [n, []]));
       for (const r of feed.records) bySource[r.source].push({ url: r.url, meta: r.meta });
-      // 선택 소스 수집 실패는 '데이터 0건'이 아니다. 이전 정상 수집분이 있으면 보존한다.
-      // 반면 설정에서 비활성화된 소스는 기존 동작대로 비운다.
-      const unavailable = new Set(feed.unavailableSources || []);
-      for (const n of SOURCES) {
-        if (!unavailable.has(n)) await db.replaceSource(n, bySource[n]);
-      }
+      for (const n of SOURCES) await db.replaceSource(n, bySource[n]);   // 피드에 없는 소스는 비운다
       changed = true;
     }
     await chrome.storage.local.set({ feedMeta: {
       generatedAt: feed.generatedAt, lastAttempt: now, lastSuccess: Date.now(),
-      nextAt: Date.now() + REFRESH_INTERVAL_MS, count: feed.records.length, demoOnly: feed.demoOnly,
-      unavailableSources: feed.unavailableSources || []
+      nextAt: Date.now() + REFRESH_INTERVAL_MS, count: feed.records.length, demoOnly: feed.demoOnly
     } });
     let ruleError;
     if (changed || feedMeta.ruleError) {
@@ -80,40 +77,41 @@ export function sync(force = false) {
   return runningSync;
 }
 
-// ── DNR 규칙: 피드 규칙(id 1..), 사용자 규칙(id 100001..)
-export async function rebuildRules() {
-  const s = await getSettings();
-  const old = (await chrome.declarativeNetRequest.getDynamicRules()).map(r => r.id);
-  const add = [];
-  if (s.realtime) {
-    const groups = new Map();
-    for (const r of await db.all()) (groups.get(r.url) || groups.set(r.url, []).get(r.url)).push(r);
-    // 한도를 넘으면 위험 신호가 강한 URL부터 남긴다: 여러 소스 교차 탐지 → 활성 상태 → 최근 등록 순.
-    // (한도 밖 URL도 팝업/우클릭 검사는 전체 DB를 대상으로 하므로 탐지된다.)
-    const rank = recs => [new Set(recs.map(x => x.source)).size,
-      recs.some(x => x.meta?.online) ? 1 : 0,
-      Math.max(0, ...recs.map(x => Date.parse(x.meta?.first_seen) || 0))];
-    const cap = Math.max(0, UNSAFE_RULE_LIMIT() - s.block.length - 50);   // 여유 50개
-    const urls = [...groups.entries()].filter(([u]) => !/[*^|]/.test(u))
-      .sort((a, b) => { const x = rank(a[1]), y = rank(b[1]); return y[0] - x[0] || y[1] - x[1] || y[2] - x[2]; })
-      .slice(0, cap).map(([u]) => u);
-    urls.forEach((u, i) => add.push({
-      id: i + 1, priority: 1, action: { type: 'redirect', redirect: { url: warnUrl(u) } },
-      condition: { urlFilter: `|${u}|`, isUrlFilterCaseSensitive: true, ...main }
-    }));
-  }
-  let id = USER_BASE;
-  for (const h of s.block) add.push({ id: ++id, priority: 2, action: { type: 'redirect', redirect: { url: warnUrl('http://' + h + '/') } }, condition: { urlFilter: `||${h}^`, ...main } });
-  for (const h of s.allow) add.push({ id: ++id, priority: 3, action: { type: 'allow' }, condition: { urlFilter: `||${h}^`, ...main } });
-  await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: old, addRules: add });
-  await chrome.storage.local.set({ ruleCount: add.length });
+// ── DNR 규칙 생성 및 적용. 업데이트가 겹치면 직렬화하여 오래된 데이터가 덮어쓰지 않게 한다.
+let rulesQueue = Promise.resolve();
+export function rebuildRules() {
+  const task = rulesQueue.then(async () => {
+    const s = await getSettings();
+    const { rules, stats } = buildProtectionRules(
+      s, await db.all(), chrome.runtime.getURL(WARNING_PAGE)
+    );
+    const old = (await chrome.declarativeNetRequest.getDynamicRules()).map(r => r.id);
+    // DNR 변경은 원자적으로 적용된다. 실패하면 기존 정상 규칙이 그대로 남는다.
+    await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: old, addRules: rules });
+    await chrome.storage.local.set({ ruleCount: rules.length, ruleStats: stats });
+    return stats;
+  });
+  rulesQueue = task.catch(() => {});
+  return task;
 }
 
-async function allowOnce(url) {   // 이번 브라우저 세션 동안만 허용 (session rule)
-  const id = Date.now() % 1e9;
-  await chrome.declarativeNetRequest.updateSessionRules({
-    addRules: [{ id, priority: 10, action: { type: 'allow' }, condition: { urlFilter: `|${url}|`, isUrlFilterCaseSensitive: true, ...main } }]
+// 이번 브라우저 세션에서 '해당 탭 + 정확한 URL'만 예외 허용.
+// 사용자 차단 도메인의 모든 경로를 풀어주는 방식이 아니다.
+async function allowOnce(raw, tabId) {
+  const condition = sessionAllowCondition(raw, tabId);
+  const dnr = chrome.declarativeNetRequest;
+  const existing = await dnr.getSessionRules();
+  const same = existing.find(rule => rule.action.type === 'allow' &&
+    JSON.stringify(rule.condition) === JSON.stringify(condition));
+  if (same) return { ok: true, reused: true };
+  if (existing.length >= (dnr.MAX_NUMBER_OF_SESSION_RULES || 5000)) {
+    throw new Error('세션 허용 규칙 한도를 초과했습니다. 브라우저를 다시 시작해 주세요.');
+  }
+  const id = Math.max(0, ...existing.map(r => r.id)) + 1;
+  await dnr.updateSessionRules({
+    addRules: [{ id, priority: 100, action: { type: 'allow' }, condition }]
   });
+  return { ok: true, reused: false };
 }
 
 // ── 이벤트
@@ -122,17 +120,18 @@ chrome.runtime.onInstalled.addListener(() => {
   // 이전 버전(사용자가 API 키를 직접 입력)에서 저장된 키와 상태를 제거한다.
   chrome.storage.local.remove(['authKey', 'phishKey', 'feedState', 'syncStatus']);
   ensureAlarm();
-  chrome.contextMenus.create({ id: 'check', title: 'Safe UR Link로 검사', contexts: ['link', 'selection'] });
+  chrome.contextMenus.create({ id: 'check', title: 'SafeURLink로 검사', contexts: ['link', 'selection'] });
+  rebuildRules().catch(console.error);
   sync();
 });
-chrome.runtime.onStartup.addListener(() => { ensureAlarm(); sync(); });
+chrome.runtime.onStartup.addListener(() => { ensureAlarm(); rebuildRules().catch(console.error); sync(); });
 chrome.alarms.onAlarm.addListener(a => a.name === 'sync' && sync());
 
 chrome.contextMenus.onClicked.addListener(async info => {
   const r = await check(info.linkUrl || info.selectionText);
   const labels = { Malicious: '악성 URL', Suspicious: '주의 필요', 'No Threat Detected': '위협 미탐지' };
   chrome.notifications.create({
-    type: 'basic', iconUrl: 'assets/icons/128.png', title: r.error ? 'Safe UR Link' : `${labels[r.verdict]} · 위험 점수 ${r.score}/100`,
+    type: 'basic', iconUrl: 'assets/icons/128.png', title: r.error ? 'SafeURLink' : `${labels[r.verdict]} · 위험 점수 ${r.score}/100`,
     message: r.error || (r.reasons[0]?.text || '탐지된 위험 요소가 없습니다. (안전을 보증하지는 않습니다)')
   });
 });
@@ -142,9 +141,9 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     check: () => check(msg.url),
     sync: () => sync(msg.force === true),
     rebuild: () => rebuildRules(),
-    allowOnce: () => allowOnce(msg.url),
+    allowOnce: () => allowOnce(msg.url, sender.tab?.id),
     goSafe: () => chrome.tabs.update(sender.tab.id, { url: 'chrome://newtab/' }),
-    status: async () => ({ ...(await chrome.storage.local.get(['feedMeta', 'ruleCount'])), counts: await db.countBySource() })
+    status: async () => ({ ...(await chrome.storage.local.get(['feedMeta', 'ruleCount', 'ruleStats'])), counts: await db.countBySource() })
   }[msg.type];
   if (!run) return false;
   run().then(reply, e => reply({ error: String(e.message || e) }));

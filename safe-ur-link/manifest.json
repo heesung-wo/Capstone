@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Safe UR Link",
-  "version": "0.2.0",
+  "name": "SafeURLink",
+  "version": "0.5.0",
   "description": "시그니처 기반 악성 URL 탐지 및 실시간 브라우저 보호",
-  "minimum_chrome_version": "110",
+  "minimum_chrome_version": "121",
   "permissions": [
     "clipboardRead",
     "storage",
@@ -14,7 +14,7 @@
     "declarativeNetRequest"
   ],
   "host_permissions": [
-    "https://heesung-wo.github.io/*"
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "background/background.js",
@@ -22,7 +22,7 @@
   },
   "action": {
     "default_popup": "pages/popup/popup.html",
-    "default_title": "Safe UR Link"
+    "default_title": "SafeURLink"
   },
   "options_page": "pages/options/options.html",
   "icons": {

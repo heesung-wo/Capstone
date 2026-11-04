@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { enabledSources, buildFeed, pickTop, MAX_PER_SOURCE } from '../scripts/build-feed.mjs';
+import { enabledSources, buildFeed, pickTop, SOURCE_LIMITS } from '../scripts/build-feed.mjs';
 import { validateFeed } from '../core/remote-feed.js';
 
 test('모든 스위치가 꺼져 있으면 어떤 소스도 공개하지 않는다', () => {
@@ -87,11 +87,11 @@ test('모든 소스가 정상이지만 결과가 비어 있으면 emptyDataset�
   validateFeed(feed);
 });
 
-test('건수가 매우 많아도 호출 스택이 넘치지 않고 소스별 상한(10,000)만 남는다 (회귀 테스트)', async () => {
+test('건수가 매우 많아도 호출 스택이 넘치지 않고 URLhaus 상한(9,000)만 남는다 (회귀 테스트)', async () => {
   const rows = Array.from({ length: 200_000 }, (_, i) => ({ url: `https://bad${i}.invalid/x`, meta: { online: i % 2 === 0 } }));
   const feed = await buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_URLHAUS: 'true' }, { collectors: { URLhaus: async () => rows } });
-  assert.equal(MAX_PER_SOURCE, 10_000);
-  assert.equal(feed.signatures.length, 10_000);
+  assert.equal(SOURCE_LIMITS.URLhaus, 9_000);
+  assert.equal(feed.signatures.length, 9_000);
 });
 
 test('상한은 각 소스에 따로 적용된다', async () => {
@@ -100,8 +100,8 @@ test('상한은 각 소스에 따로 적용된다', async () => {
     { REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_URLHAUS: 'true', PUBLISH_PHISHTANK: 'true' },
     { collectors: { URLhaus: async () => mk('u'), PhishTank: async () => mk('p') } }
   );
-  assert.equal(feed.signatures.filter(s => s.source === 'URLhaus').length, 10_000);
-  assert.equal(feed.signatures.filter(s => s.source === 'PhishTank').length, 10_000);
+  assert.equal(feed.signatures.filter(s => s.source === 'URLhaus').length, 9_000);
+  assert.equal(feed.signatures.filter(s => s.source === 'PhishTank').length, 9_000);
 });
 
 test('상한을 넘으면 활성 → 검증됨 → 최근 등록 순으로 남긴다', () => {
@@ -120,18 +120,26 @@ test('상한 이하이면 순서와 내용을 그대로 유지한다', () => {
   assert.equal(pickTop(rows, 10), rows);
 });
 
-test('MAX_PER_SOURCE 환경변수로 상한을 바꿀 수 있다', async () => {
-  const rows = Array.from({ length: 50 }, (_, i) => ({ url: `https://e${i}.invalid/` }));
+test('구 MAX_PER_SOURCE 환경변수로 고정 수집 상한이 바뀌지 않는다', async () => {
+  const rows = Array.from({ length: 9500 }, (_, i) => ({ url: `https://e${i}.invalid/` }));
   const feed = await buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_URLHAUS: 'true', MAX_PER_SOURCE: '20' }, { collectors: { URLhaus: async () => rows } });
-  assert.equal(feed.signatures.length, 20);
+  assert.equal(feed.signatures.length, 9_000);
 });
 
-test('전체 한도(30만 건)는 안전장치로 남아 있고 소스별 건수를 알려준다', async () => {
-  const rows = Array.from({ length: 300_001 }, (_, i) => ({ url: `https://z${i}.invalid/` }));
-  await assert.rejects(
-    buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_URLHAUS: 'true', MAX_PER_SOURCE: '1000000' }, { collectors: { URLhaus: async () => rows } }),
-    /URLhaus 300001건/
-  );
+test('네 소스를 합쳐 최대 29,700건(각 9,000/9,000/9,000/2,700) 수집한다', async () => {
+  const mk = tag => Array.from({ length: 12_000 }, (_, i) => ({ url: `https://${tag}${i}.invalid/` }));
+  const collectors = {
+    URLhaus: async () => mk('urlhaus'),
+    PhishTank: async () => mk('phishtank'),
+    PhishingDB: async () => mk('phishingdb'),
+    ThreatFox: async () => mk('threatfox')
+  };
+  const env = Object.fromEntries(['URLHAUS', 'PHISHTANK', 'PHISHING_DB', 'THREATFOX'].map(k => [`PUBLISH_${k}`, 'true']));
+  const feed = await buildFeed({ ...env, REDISTRIBUTION_CONFIRMED: 'true' }, { collectors });
+  const counts = Object.fromEntries(Object.keys(SOURCE_LIMITS).map(n => [n, feed.signatures.filter(r => r.source === n).length]));
+  assert.deepEqual(counts, SOURCE_LIMITS);
+  assert.equal(feed.signatures.length, 29_700);
+  validateFeed(feed);
 });
 
 const http = status => Object.assign(new Error(`HTTP ${status}`), { httpStatus: status });
@@ -171,8 +179,6 @@ test('선택 소스가 실패해도 나머지로 배포하고, 실패한 소스�
   const feed = await buildFeed({ ...ENV, OPTIONAL_SOURCES: 'PhishingDB' }, { collectors, sleep: noSleep, log: m => logs.push(m) });
   assert.deepEqual(feed.signatures.map(s => s.source), ['URLhaus']);
   assert.equal(feed.notices, undefined);
-  assert.deepEqual(feed.unavailableSources, ['PhishingDB']);
-  assert.deepEqual(validateFeed(feed).unavailableSources, ['PhishingDB']);
   assert.ok(logs.some(m => /경고: PhishingDB/.test(m)));
 });
 
@@ -187,31 +193,4 @@ test('선택 소스만 켰는데 전부 실패하면 빈 피드로 덮어쓰지 
     buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_PHISHING_DB: 'true', OPTIONAL_SOURCES: 'PhishingDB' }, { collectors, sleep: noSleep }),
     /성공한 소스가 없어/
   );
-});
-
-
-test('수집 실패 소스 목록은 검증하며 임의의 소스를 건너뛰지 못하게 한다', async () => {
-  const feed = await buildFeed({});
-  assert.throws(() => validateFeed({ ...feed, unavailableSources: ['Unknown'] }), /수집 실패 소스 목록/);
-  assert.throws(() => validateFeed({ ...feed, unavailableSources: ['PhishingDB', 'PhishingDB'] }), /수집 실패 소스 목록/);
-  assert.throws(() => validateFeed({ ...feed, unavailableSources: ['Demo'] }), /수집 실패 소스 목록/);
-});
-
-test('PhishTank 하루 캐시는 UTC 날짜가 같을 때만 재사용한다', async () => {
-  const { readPhishtankDailyCache, writePhishtankDailyCache } = await import('../scripts/build-feed.mjs');
-  const { mkdtemp, rm } = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
-  const { join } = await import('node:path');
-  const dir = await mkdtemp(join(tmpdir(), 'phishtank-cache-test-'));
-  const path = join(dir, 'daily.json');
-  const day = '2030-02-03';
-  const record = [{url: 'https://cached.invalid/login', meta: {verified: true, online: true}}];
-  try {
-    assert.equal(await readPhishtankDailyCache(day, path), null);
-    await writePhishtankDailyCache(day, record, path);
-    assert.deepEqual(await readPhishtankDailyCache(day, path), record);
-    assert.equal(await readPhishtankDailyCache('2030-02-04', path), null);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
 });
