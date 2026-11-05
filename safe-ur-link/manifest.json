@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "SafeURLink",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "시그니처 기반 악성 URL 탐지 및 실시간 브라우저 보호",
   "minimum_chrome_version": "121",
   "permissions": [
     "clipboardRead",
     "storage",
+    "unlimitedStorage",
     "tabs",
     "alarms",
     "contextMenus",

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { enabledSources, buildFeed, pickTop, SOURCE_LIMITS } from '../scripts/build-feed.mjs';
+import { enabledSources, buildFeed } from '../scripts/build-feed.mjs';
 import { validateFeed } from '../core/remote-feed.js';
 
 test('모든 스위치가 꺼져 있으면 어떤 소스도 공개하지 않는다', () => {
@@ -39,18 +39,6 @@ test('고지가 필요 없는 소스만 켜면 notices를 넣지 않는다', asy
   assert.equal(feed.notices, undefined);
 });
 
-test('시각 정보가 없는 목록은 날짜 시드 기반 표본: 같은 날은 동일, 날짜가 바뀌면 달라진다', () => {
-  const rows = Array.from({ length: 2000 }, (_, i) => ({ url: `https://s${i}.invalid/`, source: 'PhishingDB', meta: { threat: 'phishing' } }));
-  const a = pickTop(rows, 100, '2026-11-01').map(r => r.url);
-  const b = pickTop(rows, 100, '2026-11-01').map(r => r.url);
-  const c = pickTop(rows, 100, '2026-11-02').map(r => r.url);
-  assert.deepEqual(a, b);
-  assert.notDeepEqual(a, c);
-  // 파일 앞부분에 쏠리지 않는다 (앞 100줄이 그대로 선택될 확률은 사실상 0)
-  assert.notDeepEqual(a, rows.slice(0, 100).map(r => r.url));
-  assert.equal(new Set(a).size, 100);
-});
-
 test('공개 소스가 없으면 .test 시연 데이터만 만들고 확장 프로그램 검증을 통과한다', async () => {
   const feed = await buildFeed({});
   const parsed = validateFeed(feed);
@@ -68,7 +56,7 @@ test('허용된 소스만 수집하고 비민감 메타만 남긴다', async () 
   assert.deepEqual(called.sort(), ['PhishTank', 'URLhaus']);
   assert.equal(feed.signatures.length, 1);
   assert.equal(feed.signatures[0].url, 'https://evil.invalid/a');   // fragment 제거
-  assert.deepEqual(Object.keys(feed.signatures[0].meta).sort(), ['confidence', 'online', 'threat', 'verified']);
+  assert.deepEqual(Object.keys(feed.signatures[0].meta).sort(), ['confidence', 'online', 'threat', 'valid', 'verified']);
   validateFeed(feed);
 });
 
@@ -87,46 +75,39 @@ test('모든 소스가 정상이지만 결과가 비어 있으면 emptyDataset�
   validateFeed(feed);
 });
 
-test('건수가 매우 많아도 호출 스택이 넘치지 않고 URLhaus 상한(9,000)만 남는다 (회귀 테스트)', async () => {
+test('URLhaus 원본 200,000건을 자르지 않고 수동 검사 DB 피드에 유지한다', async () => {
   const rows = Array.from({ length: 200_000 }, (_, i) => ({ url: `https://bad${i}.invalid/x`, meta: { online: i % 2 === 0 } }));
   const feed = await buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_URLHAUS: 'true' }, { collectors: { URLhaus: async () => rows } });
-  assert.equal(SOURCE_LIMITS.URLhaus, 9_000);
-  assert.equal(feed.signatures.length, 9_000);
+  assert.equal(feed.signatures.length, 200_000);
+  assert.ok(feed.signatures.some(x => x.url === 'https://bad199999.invalid/x'));
+  assert.equal(validateFeed(feed).records.length, 200_000);
 });
 
-test('상한은 각 소스에 따로 적용된다', async () => {
+test('구 300,000건 전체 시그니처 제한을 초과한 피드도 검증한다', () => {
+  const rows = Array.from({ length: 300_001 }, (_, i) => ({
+    url: `https://large${i}.invalid/`, source: 'URLhaus', meta: {}
+  }));
+  const parsed = validateFeed({ schema: 1, generatedAt: new Date().toISOString(), signatures: rows });
+  assert.equal(parsed.records.length, 300_001);
+});
+
+test('소스별 개수 제한 없이 각 피드의 모든 데이터를 유지한다', async () => {
   const mk = tag => Array.from({ length: 15_000 }, (_, i) => ({ url: `https://${tag}${i}.invalid/` }));
   const feed = await buildFeed(
     { REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_URLHAUS: 'true', PUBLISH_PHISHTANK: 'true' },
     { collectors: { URLhaus: async () => mk('u'), PhishTank: async () => mk('p') } }
   );
-  assert.equal(feed.signatures.filter(s => s.source === 'URLhaus').length, 9_000);
-  assert.equal(feed.signatures.filter(s => s.source === 'PhishTank').length, 9_000);
+  assert.equal(feed.signatures.filter(s => s.source === 'URLhaus').length, 15_000);
+  assert.equal(feed.signatures.filter(s => s.source === 'PhishTank').length, 15_000);
 });
 
-test('상한을 넘으면 활성 → 검증됨 → 최근 등록 순으로 남긴다', () => {
-  const rows = [
-    { url: 'https://old-offline.invalid/', source: 'URLhaus', meta: { online: false, first_seen: '2026-10-30T00:00:00Z' } },
-    { url: 'https://online-old.invalid/', source: 'URLhaus', meta: { online: true, first_seen: '2026-01-01T00:00:00Z' } },
-    { url: 'https://online-new.invalid/', source: 'URLhaus', meta: { online: true, first_seen: '2026-10-01T00:00:00Z' } },
-    { url: 'https://online-verified.invalid/', source: 'URLhaus', meta: { online: true, verified: true, first_seen: '2025-01-01T00:00:00Z' } }
-  ];
-  assert.deepEqual(pickTop(rows, 3).map(r => r.url),
-    ['https://online-verified.invalid/', 'https://online-new.invalid/', 'https://online-old.invalid/']);
-});
-
-test('상한 이하이면 순서와 내용을 그대로 유지한다', () => {
-  const rows = [{ url: 'https://a.invalid/', source: 'X', meta: {} }, { url: 'https://b.invalid/', source: 'X', meta: {} }];
-  assert.equal(pickTop(rows, 10), rows);
-});
-
-test('구 MAX_PER_SOURCE 환경변수로 고정 수집 상한이 바뀌지 않는다', async () => {
+test('구 MAX_PER_SOURCE 값도 수집 건수를 제한하지 않는다', async () => {
   const rows = Array.from({ length: 9500 }, (_, i) => ({ url: `https://e${i}.invalid/` }));
   const feed = await buildFeed({ REDISTRIBUTION_CONFIRMED: 'true', PUBLISH_URLHAUS: 'true', MAX_PER_SOURCE: '20' }, { collectors: { URLhaus: async () => rows } });
-  assert.equal(feed.signatures.length, 9_000);
+  assert.equal(feed.signatures.length, 9500);
 });
 
-test('네 소스를 합쳐 최대 29,700건(각 9,000/9,000/9,000/2,700) 수집한다', async () => {
+test('네 소스의 원본 48,000건을 모두 보존하며 실시간 상한과 분리한다', async () => {
   const mk = tag => Array.from({ length: 12_000 }, (_, i) => ({ url: `https://${tag}${i}.invalid/` }));
   const collectors = {
     URLhaus: async () => mk('urlhaus'),
@@ -136,10 +117,8 @@ test('네 소스를 합쳐 최대 29,700건(각 9,000/9,000/9,000/2,700) 수집�
   };
   const env = Object.fromEntries(['URLHAUS', 'PHISHTANK', 'PHISHING_DB', 'THREATFOX'].map(k => [`PUBLISH_${k}`, 'true']));
   const feed = await buildFeed({ ...env, REDISTRIBUTION_CONFIRMED: 'true' }, { collectors });
-  const counts = Object.fromEntries(Object.keys(SOURCE_LIMITS).map(n => [n, feed.signatures.filter(r => r.source === n).length]));
-  assert.deepEqual(counts, SOURCE_LIMITS);
-  assert.equal(feed.signatures.length, 29_700);
-  validateFeed(feed);
+  assert.equal(feed.signatures.length, 48_000);
+  assert.equal(validateFeed(feed).records.length, 48_000);
 });
 
 const http = status => Object.assign(new Error(`HTTP ${status}`), { httpStatus: status });

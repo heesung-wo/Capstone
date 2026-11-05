@@ -1,6 +1,6 @@
 {
   "name": "safeurlink",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "SafeURLink 확장 프로그램의 시그니처 피드 빌드/테스트용 (확장 프로그램 자체에는 포함되지 않음)",

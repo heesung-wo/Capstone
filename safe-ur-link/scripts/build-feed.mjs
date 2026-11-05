@@ -4,7 +4,6 @@
 //   PHISHTANK_KEY      : PhishTank (선택)
 //   PHISHTANK_USER_AGENT : PhishTank 요청에 쓸 식별 가능한 User-Agent
 //   PUBLISH_* / REDISTRIBUTION_CONFIRMED : 소스별 공개 재배포 허용 스위치 (URLHAUS, THREATFOX, PHISHTANK, PHISHING_DB)
-import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,15 +11,9 @@ import { normalizeUrl } from '../core/common.js';
 import { urlhaus, phishtank, phishingDatabase, threatfox } from '../core/feeds.js';
 import { validateFeed, SCHEMA_VERSION } from '../core/remote-feed.js';
 
-const MAX_RECORDS = 300_000; // core/remote-feed.js 의 확장 프로그램 허용 한도와 동일 (안전장치)
-// SafeURLink v0.5.0: 소스별 고정 수집 상한(최대 29,700건).
-// 원본 공급량이 부족하거나 소스 간 URL이 중복되면 실제 고유 차단 URL 수는 더 적을 수 있다.
-export const SOURCE_LIMITS = Object.freeze({
-  URLhaus: 9_000,
-  PhishTank: 9_000,
-  PhishingDB: 9_000,
-  ThreatFox: 2_700
-});
+// 수집 단계에서는 소스별 고정 건수 제한을 적용하지 않습니다.
+// 해당 소스의 현재 피드가 제공한 HTTP(S) URL을 정규화/중복 제거하여 모두 배포합니다.
+// 실시간 보호에 적용할 소스별 건수와 선별 우선순위는 core/dnr.js에서만 관리합니다.
 
 // 일시적인 오류(5xx, 429, 네트워크 실패)만 재시도한다. 401/403/404 같은 설정 오류는 재시도해도 소용없으므로 바로 실패시킨다.
 const RETRY_DELAYS_MS = [5_000, 20_000];
@@ -65,6 +58,7 @@ function slimMeta(m = {}) {
   const meta = {
     online: m.online === true,
     verified: m.verified === true,
+    valid: m.valid === true,
     confidence: Number.isFinite(m.confidence) ? m.confidence : 0,
     threat: typeof m.threat === 'string' ? m.threat.slice(0, 100) : ''
   };
@@ -85,18 +79,6 @@ export function normalizeRows(source, rows) {
   return out;
 }
 
-// 상한을 넘으면 위험 신호가 강한 행부터 남긴다: 활성(online) → 검증됨 → 신뢰도 높음 → 최근 등록.
-// 점수가 같은 행(예: 등록 시각이 없는 목록)은 원본 파일의 순서에 기대지 않도록 "날짜 시드 기반 무작위 표본"으로 고른다.
-// 같은 날, 같은 입력이면 항상 같은 결과가 나오고(재실행해도 안정적), 날짜가 바뀌면 표본이 바뀐다.
-export function pickTop(rows, limit = SOURCE_LIMITS.URLhaus, seed = '') {
-  if (rows.length <= limit) return rows;
-  const tie = url => createHash('sha1').update(`${seed}|${url}`).digest().readUInt32BE(0);
-  const key = r => [r.meta.online ? 1 : 0, r.meta.verified ? 1 : 0, r.meta.confidence || 0, Date.parse(r.meta.first_seen) || 0];
-  return rows.map(r => ({ r, k: key(r), t: tie(r.url) }))
-    .sort((a, b) => b.k[0] - a.k[0] || b.k[1] - a.k[1] || b.k[2] - a.k[2] || b.k[3] - a.k[3] || a.t - b.t)
-    .slice(0, limit).map(x => x.r);
-}
-
 function demoSignatures(now) {
   const first_seen = new Date(now).toISOString();
   return ['https://malware.test/demo', 'https://phishing.test/login'].map(url => ({
@@ -106,7 +88,6 @@ function demoSignatures(now) {
 }
 
 export async function buildFeed(env = {}, { collectors = defaultCollectors(env), now = Date.now(), log = () => {}, sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
-  const seed = new Date(now).toISOString().slice(0, 10);   // 표본 선택용 날짜 시드 (UTC)
   const enabled = enabledSources(env);
   const names = Object.keys(enabled).filter(n => enabled[n]);
   const secrets = [env.ABUSE_CH_AUTH_KEY, env.PHISHTANK_KEY].filter(Boolean);
@@ -137,9 +118,7 @@ export async function buildFeed(env = {}, { collectors = defaultCollectors(env),
     for (const name of names) {
       try {
         let rows = normalizeRows(name, await withRetry(name, () => collectors[name]()));
-        const found = rows.length;
-        rows = pickTop(rows, SOURCE_LIMITS[name], seed);
-        if (found > rows.length) log(`${name}: 원본 ${found.toLocaleString()}건 중 상위 ${rows.length.toLocaleString()}건만 사용 (소스별 상한)`);
+        // 수동 URL 검사는 이 전체 시그니처를 이용하므로 수집 단계에서 자르지 않습니다.
         // 주의: push(...rows)는 12만 건 이상에서 "Maximum call stack size exceeded"가 발생하므로 반복문을 쓴다.
         for (const r of rows) signatures.push(r);
         counts[name] = rows.length;
@@ -156,12 +135,6 @@ export async function buildFeed(env = {}, { collectors = defaultCollectors(env),
     // 선택 소스까지 전부 실패했다면 빈 피드로 기존 데이터를 지우지 않도록 중단한다.
     if (!succeeded.length) throw new Error(`수집에 성공한 소스가 없어 이전 배포본을 유지합니다.\n${warnings.join('\n')}`);
   }
-  if (signatures.length > MAX_RECORDS) {
-    const detail = Object.entries(counts).map(([k, n]) => `${k} ${n}건`).join(', ');
-    throw new Error(`시그니처가 허용 한도 ${MAX_RECORDS.toLocaleString()}건을 초과했습니다 (총 ${signatures.length}건: ${detail}). `
-      + '소스별 상한(SOURCE_LIMITS)을 조정하거나 공개 소스를 줄이세요.');
-  }
-
   const feed = {
     schema: SCHEMA_VERSION,
     generatedAt: new Date(now).toISOString(),

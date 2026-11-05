@@ -117,6 +117,7 @@ export async function phishtank({ phishKey = '', userAgent = '' } = {}) {
     url: e.url,
     meta: {
       verified: e.verified === 'yes' || e.verified === true,
+      valid: true, // 공식 online-valid 피드에는 검증된 유효 피싱 URL만 포함된다.
       online: e.online === 'yes' || e.online === true,
       threat: 'phishing',
       target: e.target || undefined,

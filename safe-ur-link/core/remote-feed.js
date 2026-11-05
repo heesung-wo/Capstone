@@ -3,7 +3,6 @@ import { normalizeUrl } from './common.js';
 export const SCHEMA_VERSION = 1;
 export const SOURCES = ['URLhaus', 'PhishTank', 'PhishingDB', 'ThreatFox', 'Demo'];
 const SOURCE_SET = new Set(SOURCES);
-const MAX_RECORDS = 300_000;
 
 export function validateFeed(data) {
   if (!data || typeof data !== 'object' || Array.isArray(data) || data.schema !== SCHEMA_VERSION) {
@@ -13,8 +12,8 @@ export function validateFeed(data) {
   if (!Number.isFinite(ms) || ms > Date.now() + 3600_000) {
     throw new Error('배포된 데이터의 생성 시각이 올바르지 않습니다.');
   }
-  if (!Array.isArray(data.signatures) || data.signatures.length > MAX_RECORDS) {
-    throw new Error('시그니처 목록이 올바르지 않거나 허용 크기를 초과했습니다.');
+  if (!Array.isArray(data.signatures)) {
+    throw new Error('시그니처 목록이 올바르지 않습니다.');
   }
   if (!data.signatures.length && data.emptyDataset !== true) {
     throw new Error('빈 시그니처 데이터입니다. 이전 데이터베이스를 유지합니다.');
@@ -38,6 +37,7 @@ export function validateFeed(data) {
     const meta = {
       online: m.online === true,
       verified: m.verified === true,
+      valid: m.valid === true,
       confidence: Number.isFinite(m.confidence) ? Math.max(0, Math.min(100, m.confidence)) : 0,
       threat: typeof m.threat === 'string' ? m.threat.slice(0, 100) : '',
       first_seen: typeof m.first_seen === 'string' ? m.first_seen : undefined

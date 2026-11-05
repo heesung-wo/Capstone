@@ -35,6 +35,7 @@ test('PhishTank JSON supports anonymous feed, yields actual metadata', async () 
   const found = await phishtank({});
   assert.equal(found.length,1);
   assert.equal(found[0].meta.verified,true);
+  assert.equal(found[0].meta.valid,true); // online-valid 피드에 포함된 URL
   assert.equal(found[0].meta.first_seen,'2026-10-10T00:00:00.000Z');
   assert.equal(lastRequest.url,'https://data.phishtank.com/data/online-valid.json');
 });

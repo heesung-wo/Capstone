@@ -5,10 +5,15 @@ import { normalizeUrl } from './common.js';
 // Chrome 121+ : 동적 규칙 전체 30,000개(안전한 block/allow 포함).
 // redirect는 이 전체 한도 안에서 별도로 최대 5,000개.
 export const MAX_PROTECTION_RULES = 30_000;
-// 수집된 시그니처에서 최대 29,700개를 자동 block.
+// 전체 IndexedDB는 제한 없이 보관하고 실시간 차단 규칙에서만 29,700개를 선별.
 // 사용자 지정 차단 도메인은 별도 최대 300개 redirect.
 // 허용 규칙까지 포함해 총 30,000개를 초과하면 block 개수를 먼저 줄인다.
 export const MAX_SIGNATURE_RULES = 29_700;
+// API 수집 상한이 아니라 실시간 보호에만 적용하는 소스별 선정 상한입니다.
+// 각 소스 내에서 활성/유효/검증/신뢰도/최신순으로 추리고, 동일 URL은 DNR 규칙 하나로 합칩니다.
+export const REALTIME_SOURCE_LIMITS = Object.freeze({
+  URLhaus: 9_000, PhishTank: 9_000, PhishingDB: 9_000, ThreatFox: 2_700, Demo: 2
+});
 export const MAX_BLOCK_HOSTS = 300;
 export const DEMO_SIGNATURES = ['https://malware.test/demo', 'https://phishing.test/login'];
 const MAIN_FRAME = ['main_frame'];
@@ -31,9 +36,17 @@ export function validateHostLists(allow, block) {
 const rankOf = records => {
   const sources = new Set(records.map(r => r.source)).size;
   const active = records.some(r => r.meta?.online) ? 1 : 0;
+  const valid = records.some(r => r.meta?.valid) ? 1 : 0;
   const verified = records.some(r => r.meta?.verified) ? 1 : 0;
+  const confidence = Math.max(0, ...records.map(r => r.meta?.confidence || 0));
   const newest = Math.max(0, ...records.map(r => Date.parse(r.meta?.first_seen) || 0));
-  return [sources, active, verified, newest];
+  return [sources, active, valid, verified, confidence, newest];
+};
+const byRisk = (a, b) => {
+  for (let i = 0; i < a.rank.length; i++) {
+    if (a.rank[i] !== b.rank[i]) return b.rank[i] - a.rank[i];
+  }
+  return a.url.localeCompare(b.url);
 };
 
 function canMatchExactly(url) {
@@ -56,6 +69,7 @@ export function buildProtectionRules(settings, records, warningBase) {
     total: 0, signatureRules: 0, userBlockRules: 0, userAllowRules: 0,
     candidateUrls: 0, coveredUrls: 0, skippedUrls: 0,
     excludedByAllow: 0, handledByUserBlock: 0, unsupportedUrls: 0, quotaOverflowUrls: 0,
+    selectedBySource: {}, sourceLimits: REALTIME_SOURCE_LIMITS,
     limit: MAX_PROTECTION_RULES
   };
   if (settings.realtime === false) return { rules: [], stats };
@@ -85,9 +99,8 @@ export function buildProtectionRules(settings, records, warningBase) {
     condition: { urlFilter: `||${allow[i]}^`, resourceTypes: MAIN_FRAME }
   });
 
-  // 3. '지금 업데이트'로 받은 URL 피드: 고유 URL마다 block 규칙 생성.
-  // 사용자 차단 도메인은 위의 redirect 규칙(priority 20)으로 처리한다.
-  // 점수는 URL 직접 검사 시에만 사용하고 DNR block 여부에는 사용하지 않는다.
+  // 3. 전체 DB에 저장된 고유 URL을 분류한다.
+  // 수동 URL 검사는 이와 무관하게 IndexedDB 전체를 조회한다.
   const grouped = new Map();
   for (const record of records) {
     const u = normalizeUrl(record.url);
@@ -95,33 +108,40 @@ export function buildProtectionRules(settings, records, warningBase) {
     if (!grouped.has(u)) grouped.set(u, []);
     grouped.get(u).push(record);
   }
-  // 공개 피드가 전혀 없을 때에만 시연용 .test 규칙 2개 생성.
-  // 실제 피드가 있으면 29,700개 슬롯을 시연용 URL이 차지하지 않는다.
   if (grouped.size === 0) {
     for (const url of DEMO_SIGNATURES) grouped.set(url, [{ source: 'Demo', meta: {} }]);
   }
   stats.candidateUrls = grouped.size;
 
-  const candidates = [];
+  const candidatesBySource = new Map(Object.keys(REALTIME_SOURCE_LIMITS).map(s => [s, []]));
+  const allCandidates = new Map();
   for (const [url, recs] of grouped) {
     const host = new URL(url).hostname;
     if (!canMatchExactly(url)) { stats.unsupportedUrls++; continue; }
-    if (allow.some(h => hostMatches(host, h))) {
-      stats.excludedByAllow++; // 허용 도메인은 명시적으로 차단 제외
-      continue;
-    }
+    if (allow.some(h => hostMatches(host, h))) { stats.excludedByAllow++; continue; }
     if (block.some(h => hostMatches(host, h))) {
-      stats.handledByUserBlock++; // 더 높은 우선순위의 경고 페이지 규칙이 처리
+      stats.handledByUserBlock++;
       stats.coveredUrls++;
       continue;
     }
-    candidates.push({ url, rank: rankOf(recs) });
+    const row = { url, rank: rankOf(recs) };
+    allCandidates.set(url, row);
+    for (const source of new Set(recs.map(r => r.source))) {
+      if (candidatesBySource.has(source)) candidatesBySource.get(source).push(row);
+    }
   }
-  candidates.sort((a, b) => {
-    for (let i = 0; i < 4; i++) if (a.rank[i] !== b.rank[i]) return b.rank[i] - a.rank[i];
-    return a.url.localeCompare(b.url); // 동점 시 결정적 순서
-  });
 
+  // 4. '실시간 보호 전용' 각 소스 상한만큼 우선순위 상위 URL을 선정한다.
+  // URLhaus 9000 / PhishTank 9000 / PhishingDB 9000 / ThreatFox 2700.
+  // 서로 다른 소스에서 나온 동일 URL은 규칙 하나로 합친다.
+  const selected = new Map();
+  for (const [source, entries] of candidatesBySource) {
+    entries.sort(byRisk);
+    const selectedRows = entries.slice(0, REALTIME_SOURCE_LIMITS[source]);
+    stats.selectedBySource[source] = selectedRows.length;
+    for (const row of selectedRows) selected.set(row.url, row);
+  }
+  const candidates = [...selected.values()].sort(byRisk);
   const available = Math.max(0, Math.min(MAX_SIGNATURE_RULES, MAX_PROTECTION_RULES - rules.length));
   for (const [i, row] of candidates.slice(0, available).entries()) {
     rules.push({
@@ -134,7 +154,8 @@ export function buildProtectionRules(settings, records, warningBase) {
   stats.userBlockRules = block.length;
   stats.userAllowRules = allow.length;
   stats.total = rules.length;
-  stats.quotaOverflowUrls = Math.max(0, candidates.length - available);
+  // 전체 DB 중 실시간 보호에 선정되지 못한 URL 수(소스별 제한 + DNR 전체 규칙 제한).
+  stats.quotaOverflowUrls = Math.max(0, allCandidates.size - stats.signatureRules);
   stats.skippedUrls = stats.unsupportedUrls + stats.excludedByAllow + stats.quotaOverflowUrls;
   // 사용자 차단 도메인으로 리다이렉트하는 URL은 skippedUrls에 넣지 않는다.
   return { rules, stats };

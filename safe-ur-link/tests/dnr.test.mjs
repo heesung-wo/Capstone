@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildProtectionRules, MAX_PROTECTION_RULES, MAX_SIGNATURE_RULES, MAX_BLOCK_HOSTS,
+import { buildProtectionRules, MAX_PROTECTION_RULES, MAX_SIGNATURE_RULES, MAX_BLOCK_HOSTS, REALTIME_SOURCE_LIMITS,
   validateHostLists, sessionAllowCondition } from '../core/dnr.js';
 
 const page = 'chrome-extension://exampleid/pages/warning/warning.html';
@@ -46,39 +46,57 @@ test('DB와 사용자 차단 목록에 동일 주소가 있으면 redirect 우�
   assert.ok(!rules.some(x => x.condition.urlFilter === '|https://allowed.test/login|'));
 });
 
-test('시그니처 block 상한 29,700개를 지키고 초과 건수를 보고한다', () => {
-  const many = Array.from({length:MAX_PROTECTION_RULES + 50},(_,i)=>sig(`https://batch${i}.test/path`));
-  const {rules,stats}=build({block:['blocked.test'], allow:['allowed.test']}, many);
-  assert.equal(rules.length, MAX_SIGNATURE_RULES + 2);
-  assert.equal(stats.signatureRules, MAX_SIGNATURE_RULES);
-  assert.equal(stats.quotaOverflowUrls, many.length - MAX_SIGNATURE_RULES);
-  assert.equal(stats.skippedUrls, many.length - MAX_SIGNATURE_RULES);
-  assert.equal(rules.filter(r=>r.action.type==='block').length, MAX_SIGNATURE_RULES);
-  assert.equal(rules.filter(r=>r.action.type==='redirect').length,1);
-  assert.ok(rules.every(r => r.id <= MAX_PROTECTION_RULES || r.id >= 100001));
+const fullCapacityRecords = () => Object.entries(REALTIME_SOURCE_LIMITS)
+  .filter(([source]) => source !== 'Demo')
+  .flatMap(([source, count]) => Array.from({ length: count }, (_, i) =>
+    sig(`https://${source.toLowerCase()}${i}.invalid/file`, source)));
+
+test('전체 DB가 30,000건 이상이어도 URLhaus 실시간 규칙은 9,000개만 적용', () => {
+  const many = Array.from({ length: MAX_PROTECTION_RULES + 50 }, (_, i) => sig(`https://batch${i}.test/path`));
+  const { rules, stats } = build({ block: ['blocked.test'], allow: ['allowed.test'] }, many);
+  assert.equal(rules.length, REALTIME_SOURCE_LIMITS.URLhaus + 2);
+  assert.equal(stats.signatureRules, REALTIME_SOURCE_LIMITS.URLhaus);
+  assert.equal(stats.quotaOverflowUrls, many.length - REALTIME_SOURCE_LIMITS.URLhaus);
+  assert.equal(stats.selectedBySource.URLhaus, REALTIME_SOURCE_LIMITS.URLhaus);
 });
 
-test('사용자 차단 300개와 시그니처 29,700개를 함께 등록한다', () => {
-  const records = Array.from({length: MAX_SIGNATURE_RULES}, (_, i) => sig(`https://real${i}.invalid/bad`));
-  const block = Array.from({length: MAX_BLOCK_HOSTS}, (_, i) => `manual${i}.test`);
-  const { rules, stats } = build({ block }, records);
+test('각 소스 상한을 합친 최대 29,700개 DB 차단 + 300개 사용자 차단', () => {
+  const block = Array.from({ length: MAX_BLOCK_HOSTS }, (_, i) => `manual${i}.test`);
+  const { rules, stats } = build({ block }, fullCapacityRecords());
   assert.equal(rules.length, MAX_PROTECTION_RULES);
   assert.equal(stats.signatureRules, MAX_SIGNATURE_RULES);
   assert.equal(stats.userBlockRules, MAX_BLOCK_HOSTS);
   assert.equal(rules.filter(r => r.action.type === 'redirect').length, MAX_BLOCK_HOSTS);
-  assert.equal(rules.filter(r => r.action.type === 'block').length, MAX_SIGNATURE_RULES);
 });
 
-test('300개 사용자 차단과 허용 규칙이 공존하면 시그니처를 줄여 전체 30,000개를 지킨다', () => {
-  const records = Array.from({length: MAX_SIGNATURE_RULES}, (_, i) => sig(`https://real${i}.invalid/bad`));
-  const block = Array.from({length: MAX_BLOCK_HOSTS}, (_, i) => `manual${i}.test`);
-  const allow = Array.from({length: 7}, (_, i) => `allow${i}.test`);
-  const { rules, stats } = build({ block, allow }, records);
+test('사용자 허용 목록 추가 시 DNR 30,000개 한도를 유지한다', () => {
+  const block = Array.from({ length: MAX_BLOCK_HOSTS }, (_, i) => `manual${i}.test`);
+  const allow = Array.from({ length: 7 }, (_, i) => `allow${i}.test`);
+  const { rules, stats } = build({ block, allow }, fullCapacityRecords());
   assert.equal(rules.length, MAX_PROTECTION_RULES);
   assert.equal(stats.signatureRules, MAX_SIGNATURE_RULES - allow.length);
-  assert.equal(stats.userBlockRules, MAX_BLOCK_HOSTS);
-  assert.equal(stats.userAllowRules, allow.length);
   assert.equal(stats.quotaOverflowUrls, allow.length);
+});
+
+test('같은 URL이 여러 DB에 있으면 실시간 규칙은 하나만 생성한다', () => {
+  const shared = 'https://shared.test/path';
+  const { rules, stats } = build({}, [
+    sig(shared, 'URLhaus', { online: true }), sig(shared, 'PhishTank', { online: true, valid: true, verified: true }),
+    sig('https://other.test/path', 'PhishTank')
+  ]);
+  assert.equal(stats.candidateUrls, 2);
+  assert.equal(stats.signatureRules, 2);
+  assert.equal(rules.filter(r => r.condition.urlFilter === `|${shared}|`).length, 1);
+});
+
+test('전체 수동 DB는 유지하고 실시간 URLhaus 9,000개 중 online 우선 선정', () => {
+  const offline = Array.from({ length: 9_000 }, (_, i) => sig(`https://offline${i}.test/a`, 'URLhaus', { online: false }));
+  const online = Array.from({ length: 100 }, (_, i) => sig(`https://online${i}.test/a`, 'URLhaus', { online: true }));
+  const { rules, stats } = build({}, [...offline, ...online]);
+  assert.equal(stats.candidateUrls, 9_100);
+  assert.equal(stats.signatureRules, 9_000);
+  assert.equal(stats.quotaOverflowUrls, 100);
+  assert.ok(rules.some(r => r.condition.urlFilter === '|https://online99.test/a|'));
 });
 
 test('실제 피드가 있을 때에는 시연용 URL을 block 슬롯에 추가하지 않는다', () => {

@@ -32,14 +32,18 @@ async function status() {
   const s = await chrome.runtime.sendMessage({ type: 'status' });
   if (s?.error) { $('msg').textContent = s.error; return; }
   const m = s.feedMeta || {}, rs = s.ruleStats || {};
+  const totalDb = Object.values(s.counts || {}).reduce((sum, n) => sum + Number(n || 0), 0);
+  const selectedText = Object.entries(rs.selectedBySource || {}).filter(([k]) => k !== 'Demo')
+    .map(([k, n]) => `${k} ${Number(n).toLocaleString()}`).join(' / ');
   const time = t => new Date(t).toLocaleString();
   $('rc').textContent = `DNR 적용 ${Number(s.ruleCount || 0).toLocaleString()} / ${MAX_PROTECTION_RULES.toLocaleString()}개` +
     ` (DB 자동 차단 ${Number(rs.signatureRules || 0).toLocaleString()} · 사용자 경고 ${Number(rs.userBlockRules || 0).toLocaleString()} · 허용 ${Number(rs.userAllowRules || 0).toLocaleString()})`;
-  $('coverage').textContent = `DB block 상한 ${MAX_SIGNATURE_RULES.toLocaleString()}개 · 사용자 redirect 최대 ${MAX_BLOCK_HOSTS.toLocaleString()}개 · 고유 시그니처 ${Number(rs.candidateUrls || 0).toLocaleString()}개 중 자동 차단 ${Number(rs.signatureRules || 0).toLocaleString()}개` +
+  $('coverage').textContent = `전체 수동 검사 DB ${totalDb.toLocaleString()}건 · DB block 상한 ${MAX_SIGNATURE_RULES.toLocaleString()}개 · 사용자 redirect 최대 ${MAX_BLOCK_HOSTS.toLocaleString()}개 · 고유 시그니처 ${Number(rs.candidateUrls || 0).toLocaleString()}개 중 자동 차단 ${Number(rs.signatureRules || 0).toLocaleString()}개` +
     ` · 한도 초과 ${Number(rs.quotaOverflowUrls || 0).toLocaleString()}개` +
     ` · 필터 표현 불가 ${Number(rs.unsupportedUrls || 0).toLocaleString()}개` +
     ` · 사용자 허용으로 제외 ${Number(rs.excludedByAllow || 0).toLocaleString()}개` +
     ` · 사용자 경고 규칙으로 처리 ${Number(rs.handledByUserBlock || 0).toLocaleString()}개` +
+    ` · 실시간 소스별 선정 ${selectedText || '없음'} (중복 URL은 규칙 1개)` +
     ` · DNR 미반영 URL도 수동 검사에서는 조회 가능합니다. (사용자 허용 규칙이 추가되면 DB block 수가 줄어들 수 있음)`;
   const rows = Object.entries(s.counts || {}).filter(([k, n]) => k !== 'Demo' || n > 0)
     .map(([k, n]) => `<tr><td>${esc(k)}</td><td>${n.toLocaleString()}건</td></tr>`);
