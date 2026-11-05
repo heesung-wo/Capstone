@@ -40,12 +40,20 @@ export function validateFeed(data) {
       valid: m.valid === true,
       confidence: Number.isFinite(m.confidence) ? Math.max(0, Math.min(100, m.confidence)) : 0,
       threat: typeof m.threat === 'string' ? m.threat.slice(0, 100) : '',
-      first_seen: typeof m.first_seen === 'string' ? m.first_seen : undefined
+      first_seen: typeof m.first_seen === 'string' ? m.first_seen : undefined,
+      active: m.active !== false,
+      lastObservedAt: typeof m.lastObservedAt === 'string' && Number.isFinite(Date.parse(m.lastObservedAt))
+        ? new Date(m.lastObservedAt).toISOString() : undefined
     };
     records.push({ url, source: row.source, meta });
   }
   if (!records.length && data.emptyDataset !== true) throw new Error('유효한 시그니처가 없습니다.');
-  return { generatedAt: new Date(ms).toISOString(), records, demoOnly: records.every(r => r.source === 'Demo') };
+  const sources = data.sourceStatus && typeof data.sourceStatus === 'object' && !Array.isArray(data.sourceStatus)
+    ? Object.fromEntries(Object.entries(data.sourceStatus)
+      .filter(([key, val]) => SOURCE_SET.has(key) && val && ['updated', 'retained', 'unavailable'].includes(val.state))
+      .map(([key, val]) => [key, { state: val.state, lastSuccessAt: typeof val.lastSuccessAt === 'string' ? val.lastSuccessAt : undefined }]))
+    : {};
+  return { generatedAt: new Date(ms).toISOString(), records, demoOnly: records.every(r => r.source === 'Demo'), sourceStatus: sources };
 }
 
 export async function downloadFeed(url, fetchFn = fetch) {

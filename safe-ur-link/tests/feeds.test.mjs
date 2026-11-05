@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { urlhaus, phishtank, phishingDatabase, threatfox, REFRESH_MS, PHISHTANK_ANONYMOUS_MS, PHISHING_DB_URL } from '../core/feeds.js';
+import { urlhaus, phishtank, phishingDatabase, threatfox, REFRESH_MS, PHISHTANK_ANONYMOUS_MS, PHISHING_DB_URL, PHISHING_DB_FALLBACK_URL } from '../core/feeds.js';
 
 function mock(body, status = 200, headers = {}) {
   return async (url, init = {}) => {
@@ -107,4 +107,98 @@ test('PhishTank sends custom User-Agent only when provided (server-side build)',
   assert.equal(lastRequest.init.headers['User-Agent'], 'phishtank/test-user');
   await phishtank({});
   assert.equal(lastRequest.init.headers, undefined);
+});
+
+
+test('PhishTank: 인증 JSON 404이면 인증 CSV로 넘어가고 모든 URL을 가져온다', async () => {
+  const requested = [];
+  const logs = [];
+  globalThis.fetch = async (url) => {
+    requested.push(url);
+    if (url.endsWith('.json')) return new Response('Not Found', {status:404});
+    return new Response('phish_id,url,phish_detail_url,submission_time,verified,verification_time,online,target\n42,https://bad.invalid/login,x,2026-10-01T00:00:00+00:00,yes,,yes,Test', {status:200});
+  };
+  const found = await phishtank({phishKey:'demo-key',onFallback:x=>logs.push(x)});
+  assert.equal(found.length,1);
+  assert.equal(found[0].meta.valid,true);
+  assert.equal(found[0].meta.online,true);
+  assert.equal(requested.length,2);
+  assert.equal(requested[1], 'https://data.phishtank.com/data/demo-key/online-valid.csv');
+  assert.ok(logs.some(l => /HTTP 404/.test(l)));
+  assert.ok(logs.every(l => !l.includes('demo-key')));
+});
+
+test('PhishTank: 인증 경로 모두 404이면 공개 공식 경로를 확인한다', async () => {
+  const requested = [];
+  globalThis.fetch = async url => {
+    requested.push(url);
+    if (url.includes('/secret/')) return new Response('',{status:404});
+    return new Response(JSON.stringify([{url:'https://bad.invalid/now',verified:'yes',online:'yes'}]));
+  };
+  const items = await phishtank({phishKey:'secret'});
+  assert.equal(items.length,1);
+  assert.equal(requested.length,3);
+  assert.equal(requested[2], 'https://data.phishtank.com/data/online-valid.json');
+});
+
+test('PhishTank: 401/403/429/509이면 다른 주소로 우회하지 않는다', async () => {
+  for (const status of [401,403,429,509]) {
+    let count=0;
+    globalThis.fetch = async () => { count++; return new Response('error', {status}); };
+    await assert.rejects(phishtank({phishKey:'secret'}), new RegExp('HTTP '+status));
+    assert.equal(count,1);
+  }
+});
+
+test('PhishTank: 모든 404를 명확한 설정 오류로 알린다', async () => {
+  globalThis.fetch = async () => new Response('not found', {status:404});
+  await assert.rejects(phishtank({phishKey:'secret'}), /다운로드 경로가 모두 HTTP 404/);
+});
+
+test('PhishingDB: 공식 서버 503이면 GitHub 원본으로 대체한다', async () => {
+  const logs=[]; const requests=[];
+  globalThis.fetch = async url => {
+    requests.push(url);
+    return url === PHISHING_DB_URL
+      ? new Response('unavailable',{status:503})
+      : new Response('https://evil.invalid/a\nhttps://evil.invalid/b\n');
+  };
+  const items = await phishingDatabase({onFallback:x=>logs.push(x)});
+  assert.equal(PHISHING_DB_FALLBACK_URL, 'https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-links-ACTIVE.txt');
+  assert.deepEqual(requests, [PHISHING_DB_URL, PHISHING_DB_FALLBACK_URL]);
+  assert.equal(items.length,2);
+  assert.ok(logs.some(x=>/HTTP 503/.test(x)));
+});
+
+test('PhishingDB: 공식 서버 429는 우회하지 않는다', async () => {
+  let count=0;
+  globalThis.fetch = async () => {count++;return new Response('limit',{status:429});};
+  await assert.rejects(phishingDatabase(), /HTTP 429/);
+  assert.equal(count,1);
+});
+
+test('PhishingDB: 대체 경로도 실패하면 오류와 httpStatus를 유지한다', async () => {
+  globalThis.fetch = async url => new Response('oops', {status:url === PHISHING_DB_URL ? 503:502});
+  await assert.rejects(phishingDatabase(), e => e.httpStatus === 502 && /대체 주소도 실패/.test(e.message));
+});
+
+test('PhishingDB: 공식 서버 연결 실패에서도 GitHub 원본으로 재시도한다', async () => {
+  const calls=[];
+  globalThis.fetch = async url => {
+    calls.push(url);
+    if (url === PHISHING_DB_URL) throw new Error('connection reset');
+    return new Response('https://recovered.invalid/\n', {status:200});
+  };
+  const rows=await phishingDatabase();
+  assert.equal(rows[0].url,'https://recovered.invalid/');
+  assert.deepEqual(calls,[PHISHING_DB_URL, PHISHING_DB_FALLBACK_URL]);
+});
+
+test('PhishingDB: HTTP 200이지만 HTML 오류 페이지면 GitHub 대체 주소를 사용한다', async () => {
+  globalThis.fetch = async url => url === PHISHING_DB_URL
+    ? new Response('<!doctype html><html>maintenance</html>',{status:200})
+    : new Response('https://recovered.invalid/\n',{status:200});
+  const rows=await phishingDatabase();
+  assert.equal(rows.length,1);
+  assert.equal(rows[0].url,'https://recovered.invalid/');
 });

@@ -101,48 +101,108 @@ export async function urlhaus({ authKey = '' } = {}) {
   return records;
 }
 
-export async function phishtank({ phishKey = '', userAgent = '' } = {}) {
+// PhishTank 공식 다운로드 피드는 JSON/CSV 형태가 존재한다.
+// 인증 경로에서 404를 받으면 파일 형식을 바꿔 보고, 마지막으로 공식 공개 피드를 확인한다.
+// 401/403/429/509 및 서버 장애는 우회하지 않고 상위 빌드 재시도/보존 정책에 맡긴다.
+export async function phishtank({ phishKey = '', userAgent = '', onFallback = () => {} } = {}) {
   const key = phishKey.trim();
-  const endpoint = key
-    ? `https://data.phishtank.com/data/${encodeURIComponent(key)}/online-valid.json`
-    : 'https://data.phishtank.com/data/online-valid.json';
-  // PhishTank는 식별 가능한 User-Agent를 요구한다. 서버(Node/Actions)에서 실행할 때만 지정할 수 있다.
-  const response = await getResponse(endpoint, userAgent ? { headers: { 'User-Agent': userAgent } } : {});
-  const text = await response.text();
-  assertNotHtml(text, 'PhishTank');
-  let data;
-  try { data = JSON.parse(text); } catch { throw new Error('PhishTank: 유효한 JSON이 아닙니다.'); }
-  if (!Array.isArray(data)) throw new Error('PhishTank: JSON 배열이 아닙니다.');
-  const records = data.filter(e => e && validHttpURL(e.url)).map(e => ({
-    url: e.url,
-    meta: {
-      verified: e.verified === 'yes' || e.verified === true,
-      valid: true, // 공식 online-valid 피드에는 검증된 유효 피싱 URL만 포함된다.
-      online: e.online === 'yes' || e.online === true,
-      threat: 'phishing',
-      target: e.target || undefined,
-      first_seen: dateISO(e.submission_time),
-      verified_at: dateISO(e.verification_time)
+  const base = 'https://data.phishtank.com/data/';
+  const prefix = key ? `${base}${encodeURIComponent(key)}/` : base;
+  const candidates = [
+    { url: `${prefix}online-valid.json`, type: 'json', label: '인증 JSON' },
+    { url: `${prefix}online-valid.csv`, type: 'csv', label: '인증 CSV' }
+  ];
+  if (key) {
+    candidates.push(
+      { url: `${base}online-valid.json`, type: 'json', label: '공개 JSON' },
+      { url: `${base}online-valid.csv`, type: 'csv', label: '공개 CSV' }
+    );
+  }
+  const opts = userAgent ? { headers: { 'User-Agent': userAgent } } : {};
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i];
+    let response;
+    try {
+      response = await getResponse(candidate.url, opts);
+    } catch (error) {
+      if (error.httpStatus !== 404) throw error;
+      // URL에 인증키가 포함되어 있으므로 상세 URL을 로그로 기록하지 않는다.
+      if (i < candidates.length - 1) onFallback(`PhishTank: ${candidate.label} HTTP 404 → 다른 공식 다운로드 형식으로 재시도`);
+      continue;
     }
-  }));
-  if (!records.length) throw new Error('PhishTank: 유효한 URL이 없는 JSON입니다.');
-  return records;
+    const body = await response.text();
+    assertNotHtml(body, 'PhishTank');
+    let entries;
+    if (candidate.type === 'json') {
+      try { entries = JSON.parse(body); }
+      catch { throw new Error('PhishTank: 유효한 JSON이 아닙니다.'); }
+      if (!Array.isArray(entries)) throw new Error('PhishTank: JSON 배열이 아닙니다.');
+    } else {
+      const rows = body.split(/\r?\n/).filter(line => line && !line.startsWith('#'));
+      const fields = rows[0] ? csvLine(rows[0].replace(/^\uFEFF/, '')).map(x => x.trim().toLowerCase()) : [];
+      if (!fields.includes('url') || !fields.includes('verified') || !fields.includes('online')) {
+        throw new Error('PhishTank: CSV 헤더 형식이 올바르지 않습니다.');
+      }
+      entries = [];
+      for (const line of rows.slice(1)) {
+        const cols = csvLine(line);
+        const item = {};
+        for (const field of ['url', 'verified', 'online', 'target', 'submission_time', 'verification_time']) {
+          const index = fields.indexOf(field);
+          item[field] = index < 0 ? '' : cols[index] || '';
+        }
+        entries.push(item);
+      }
+    }
+    const records = entries.filter(e => e && validHttpURL(e.url)).map(e => ({
+      url: e.url,
+      meta: {
+        verified: e.verified === 'yes' || e.verified === true,
+        valid: true, // 공식 online-valid 피드: 커뮤니티가 검증한 유효 URL
+        online: e.online === 'yes' || e.online === true,
+        threat: 'phishing',
+        target: e.target || undefined,
+        first_seen: dateISO(e.submission_time),
+        verified_at: dateISO(e.verification_time)
+      }
+    }));
+    if (!records.length) throw new Error('PhishTank: 유효한 URL이 없는 데이터입니다.');
+    if (i > 0) onFallback(`PhishTank: ${candidate.label} 경로에서 ${records.length}건 확보`);
+    return records;
+  }
+  throw new Error('PhishTank: 공식 JSON/CSV 다운로드 경로가 모두 HTTP 404입니다. PHISHTANK_KEY와 파일 다운로드 권한을 확인하세요.');
 }
 
 // Phishing.Database (MIT 라이선스). 공식 데이터 파일은 phish.co.za 에서 제공한다.
 // 프로젝트가 직접 HTTP 상태를 점검해 분류한 "ACTIVE(또는 아직 활성일 수 있는)" 링크 목록이다.
-export const PHISHING_DB_URL = 'https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-links-ACTIVE.txt';
-export async function phishingDatabase({ userAgent = '' } = {}) {
-  const response = await getResponse(PHISHING_DB_URL, userAgent ? { headers: { 'User-Agent': userAgent } } : {});
-  const text = await response.text();
-  assertNotHtml(text, 'PhishingDB');
-  // 한 줄에 URL 하나. 이 파일은 같은 링크가 중복으로 들어간 적이 있어서 이후 단계(normalizeRows)에서 중복을 제거한다.
-  const records = text.split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('#') && validHttpURL(s))
-    .map(url => ({ url, meta: { threat: 'phishing' } }));
-  // 이 목록은 등록 시각과 검증 여부를 제공하지 않으므로 first_seen/verified/online을 임의로 만들지 않는다.
-  // ("ACTIVE"는 프로젝트의 점검 결과일 뿐, 지금 이 순간 접속 가능하다는 보장이 아니므로 online=true로 표시하지 않는다.)
-  if (!records.length) throw new Error('PhishingDB: 유효한 URL이 없는 파일입니다.');
-  return records;
+export const PHISHING_DB_URL = 'https://phish.co.za/latest/phishing-links-ACTIVE.txt';
+export const PHISHING_DB_FALLBACK_URL = 'https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-links-ACTIVE.txt';
+// 공식 서버의 일시 오류/연결 실패/데이터 형식 오류에만 미러를 사용한다.
+// 403·429 등 접근 금지/호출 제한은 우회하지 않는다.
+export async function phishingDatabase({ userAgent = '', onFallback = () => {} } = {}) {
+  const opts = userAgent ? { headers: { 'User-Agent': userAgent } } : {};
+  const parse = text => {
+    assertNotHtml(text, 'PhishingDB');
+    const records = text.split(/\r?\n/).map(s => s.trim())
+      .filter(s => s && !s.startsWith('#') && validHttpURL(s))
+      .map(url => ({ url, meta: { threat: 'phishing' } }));
+    // ACTIVE 데이터에는 등록시각이나 커뮤니티 검증 여부 정보가 없다.
+    if (!records.length) throw new Error('PhishingDB: 유효한 URL이 없는 파일입니다.');
+    return records;
+  };
+  const fetchAndParse = async url => parse(await (await getResponse(url, opts)).text());
+  try { return await fetchAndParse(PHISHING_DB_URL); }
+  catch (error) {
+    const allowed = error.httpStatus == null || [404, 408, 500, 502, 503, 504].includes(error.httpStatus);
+    if (!allowed) throw error;
+    onFallback(`PhishingDB: 공식 배포 서버 실패 (${error.httpStatus ? `HTTP ${error.httpStatus}` : '연결 또는 데이터 오류'}) → GitHub 원본 시도`);
+    try { return await fetchAndParse(PHISHING_DB_FALLBACK_URL); }
+    catch (fallbackError) {
+      const combined = new Error(`PhishingDB: 공식 서버 실패 (${error.message || error}), GitHub 대체 주소도 실패 (${fallbackError.message || fallbackError})`);
+      combined.httpStatus = fallbackError.httpStatus || error.httpStatus;
+      throw combined;
+    }
+  }
 }
 
 export async function threatfox({ authKey = '' } = {}) {

@@ -56,7 +56,7 @@ test('허용된 소스만 수집하고 비민감 메타만 남긴다', async () 
   assert.deepEqual(called.sort(), ['PhishTank', 'URLhaus']);
   assert.equal(feed.signatures.length, 1);
   assert.equal(feed.signatures[0].url, 'https://evil.invalid/a');   // fragment 제거
-  assert.deepEqual(Object.keys(feed.signatures[0].meta).sort(), ['confidence', 'online', 'threat', 'valid', 'verified']);
+  assert.deepEqual(Object.keys(feed.signatures[0].meta).sort(), ['active', 'confidence', 'lastObservedAt', 'online', 'threat', 'valid', 'verified']);
   validateFeed(feed);
 });
 
@@ -149,7 +149,7 @@ test('503이 계속되면 재시도 횟수(총 3번) 후 실패한다', async ()
   assert.equal(calls, 3);
 });
 
-test('선택 소스가 실패해도 나머지로 배포하고, 실패한 소스의 고지는 넣지 않는다', async () => {
+test('선택 소스가 실패하고 이전 기록이 없으면 실패 소스의 고지는 넣지 않는다', async () => {
   const collectors = {
     URLhaus: async () => [{ url: 'https://u.invalid/a', meta: { online: true } }],
     PhishingDB: async () => { throw http(503); }

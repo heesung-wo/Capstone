@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { normalizeUrl } from '../core/common.js';
 import { urlhaus, phishtank, phishingDatabase, threatfox } from '../core/feeds.js';
 import { validateFeed, SCHEMA_VERSION } from '../core/remote-feed.js';
+import { mergeHistory } from '../core/history.js';
 
 // 수집 단계에서는 소스별 고정 건수 제한을 적용하지 않습니다.
 // 해당 소스의 현재 피드가 제공한 HTTP(S) URL을 정규화/중복 제거하여 모두 배포합니다.
@@ -41,15 +42,16 @@ export const NOTICES = {
   }
 };
 
-export function defaultCollectors(env = {}) {
+export function defaultCollectors(env = {}, log = () => {}) {
   return {
     URLhaus: () => urlhaus({ authKey: env.ABUSE_CH_AUTH_KEY || '' }),
     ThreatFox: () => threatfox({ authKey: env.ABUSE_CH_AUTH_KEY || '' }),
     PhishTank: () => phishtank({
-      phishKey: '',
-      userAgent: env.PHISHTANK_USER_AGENT || 'SafeURLinkFeedBuilder'
+      phishKey: env.PHISHTANK_KEY || '',
+      userAgent: env.PHISHTANK_USER_AGENT || 'phishtank/SafeURLinkCapstone',
+      onFallback: log
     }),
-    PhishingDB: () => phishingDatabase({ userAgent: env.FEED_USER_AGENT || 'SafeURLinkFeedBuilder (+https://github.com/heesung-wo/Capstone)' })
+    PhishingDB: () => phishingDatabase({ userAgent: env.FEED_USER_AGENT || 'SafeURLinkFeedBuilder (+https://github.com/heesung-wo/Capstone)', onFallback: log })
   };
 }
 
@@ -87,13 +89,14 @@ function demoSignatures(now) {
   }));
 }
 
-export async function buildFeed(env = {}, { collectors = defaultCollectors(env), now = Date.now(), log = () => {}, sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
+export async function buildFeed(env = {}, { collectors, previousFeed = null, now = Date.now(), log = () => {}, sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
+  collectors ||= defaultCollectors(env, log);
   const enabled = enabledSources(env);
   const names = Object.keys(enabled).filter(n => enabled[n]);
   const secrets = [env.ABUSE_CH_AUTH_KEY, env.PHISHTANK_KEY].filter(Boolean);
   const redact = msg => secrets.reduce((s, k) => s.split(k).join('***'), String(msg));
-  // OPTIONAL_SOURCES(쉼표로 구분)에 적은 소스는 수집에 실패해도 나머지 소스만으로 배포한다.
-  // 단, 실패한 소스의 데이터는 그날 피드에서 빠지므로 확장 프로그램에서도 해당 소스 데이터가 비워진다.
+  // OPTIONAL_SOURCES(쉼표 구분)가 실패하면 해당 소스의 직전 배포 기록을 재사용한다.
+  // 새로운 URL이 없더라도 기존 수집 기록은 유지한다.
   const optional = new Set(String(env.OPTIONAL_SOURCES || '').split(',').map(x => x.trim()).filter(Boolean));
   const withRetry = async (name, fn) => {
     for (let i = 0; ; i++) {
@@ -126,7 +129,7 @@ export async function buildFeed(env = {}, { collectors = defaultCollectors(env),
         log(`${name}: ${rows.length}건`);
       } catch (e) {
         const msg = `${name}: ${redact(e?.message || e)}`;
-        if (optional.has(name)) { warnings.push(msg); log(`경고: ${msg} — 선택 소스이므로 이번 배포에서는 제외합니다.`); }
+        if (optional.has(name)) { warnings.push(msg); log(`경고: ${msg} — 기존 배포 이력을 보존합니다.`); }
         else failures.push(msg);
       }
     }
@@ -135,19 +138,64 @@ export async function buildFeed(env = {}, { collectors = defaultCollectors(env),
     // 선택 소스까지 전부 실패했다면 빈 피드로 기존 데이터를 지우지 않도록 중단한다.
     if (!succeeded.length) throw new Error(`수집에 성공한 소스가 없어 이전 배포본을 유지합니다.\n${warnings.join('\n')}`);
   }
+  const generatedAt = new Date(now).toISOString();
+  const previous = previousFeed ? validateFeed(previousFeed) : null;
+  if (!names.length && previous?.records.some(r => r.source !== 'Demo') && env.ALLOW_DEMO_RESET !== 'true') {
+    throw new Error('기존 실제 시그니처가 있는데 공개 설정이 모두 꺼져 있습니다. 기존 배포본 보호를 위해 중단합니다. PUBLISH_* 설정을 확인하세요.');
+  }
+  const priorRecords = previous?.records.filter(r => names.includes(r.source)) || [];
+  // 수집이 성공한 소스만 오래된 항목을 비활성으로 표시한다. 실패한 소스는 이전 상태 그대로 유지한다.
+  if (names.length) {
+    signatures = mergeHistory(priorRecords, signatures, succeeded, generatedAt, previous?.generatedAt || generatedAt);
+  }
+  const sourceStatus = {};
+  for (const name of names) {
+    const prev = previous?.sourceStatus[name];
+    sourceStatus[name] = succeeded.includes(name)
+      ? { state: 'updated', lastSuccessAt: generatedAt }
+      : { state: priorRecords.some(r => r.source === name) ? 'retained' : 'unavailable',
+          lastSuccessAt: prev?.lastSuccessAt || (priorRecords.some(r => r.source === name) ? previous?.generatedAt : undefined) };
+  }
+  const countArchived = signatures.reduce((sum, r) => sum + (r.meta?.active === false ? 1 : 0), 0);
+  if (names.length) log(`누적 시그니처 ${signatures.length.toLocaleString()}건 (과거 이력 ${countArchived.toLocaleString()}건, 이번 갱신 성공 ${succeeded.length}개 소스)`);
   const feed = {
     schema: SCHEMA_VERSION,
-    generatedAt: new Date(now).toISOString(),
+    generatedAt,
     signatures,
-    ...(succeeded.some(n => NOTICES[n]) ? { notices: succeeded.filter(n => NOTICES[n]).map(n => ({ source: n, ...NOTICES[n] })) } : {}),
+    ...(names.length ? { sourceStatus } : {}),
+    ...(names.some(n => NOTICES[n] && signatures.some(r => r.source === n))
+      ? { notices: names.filter(n => NOTICES[n] && signatures.some(r => r.source === n)).map(n => ({ source: n, ...NOTICES[n] })) } : {}),
     ...(signatures.length ? {} : { emptyDataset: true })
   };
   validateFeed(feed); // 확장 프로그램이 거부할 형식이면 여기서 빌드를 실패시킨다.
   return feed;
 }
 
+// 이전 공개 피드를 불러와 서버 쪽에서도 누적 이력을 보존한다.
+// 404는 최초 배포일 때만 허용하며, 그 외 오류는 기존 배포본을 잘못 덮어쓰지 않도록 빌드 중단.
+export async function loadPreviousFeed(url, fetchFn = fetch) {
+  if (!url) return null;
+  if (!/^https:\/\//i.test(url)) throw new Error('PREVIOUS_FEED_URL은 HTTPS 주소여야 합니다.');
+  let res;
+  try {
+    res = await fetchFn(url, { cache: 'no-store', signal: AbortSignal.timeout(120_000) });
+  } catch (e) { throw new Error(`이전 배포 피드 연결 실패: ${e.message || e}`); }
+  if (res.status === 404) {
+    if (process.env.ALLOW_FIRST_DEPLOY === 'true') return null;
+    throw new Error('이전 배포 피드가 404입니다. 최초 배포라면 ALLOW_FIRST_DEPLOY=true로 1회 실행하세요.');
+  }
+  if (!res.ok) throw new Error(`이전 배포 피드 HTTP ${res.status}: 데이터 보존을 위해 빌드 중단`);
+  const body = await res.text();
+  let data;
+  try { data = JSON.parse(body); }
+  catch { throw new Error('이전 배포 파일이 올바른 JSON이 아닙니다. 배포를 중단합니다.'); }
+  validateFeed(data);
+  return data;
+}
+
 async function main() {
-  const feed = await buildFeed(process.env, { log: m => console.log(m) });
+  const previousFeed = await loadPreviousFeed(process.env.PREVIOUS_FEED_URL);
+  const feed = await buildFeed(process.env, { previousFeed, log: m => console.log(m) });
   const dir = fileURLToPath(new URL('../public/', import.meta.url));
   await mkdir(dir, { recursive: true });
   const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));

@@ -1,8 +1,8 @@
 import { normalizeUrl, hostOf, heuristics, externalScore, verdictOf } from '../core/common.js';
 import * as db from '../core/db.js';
 import { SIGNATURE_FEED_URL, REFRESH_INTERVAL_MS } from '../core/config.js';
-import { downloadFeed, SOURCES } from '../core/remote-feed.js';
-import { buildProtectionRules, hostMatches, DEMO_SIGNATURES, sessionAllowCondition } from '../core/dnr.js';
+import { downloadFeed } from '../core/remote-feed.js';
+import { buildProtectionRules, hostMatches, DEMO_SIGNATURES, sessionAllowCondition, REALTIME_FRESH_MS } from '../core/dnr.js';
 
 const DEFAULTS = { realtime: true, allow: [], block: [] };
 const RETRY_MS = 60 * 60_000, MANUAL_COOLDOWN_MS = 60_000;
@@ -25,14 +25,21 @@ export async function check(raw) {
     const counts = await db.countBySource();
     if (!Object.values(counts).some(n => n > 0)) records.push({ source: 'Demo', url, meta: {} });
   }
+  const historyOnly = records.length > 0 && records.every(r => {
+    if (r.meta?.active === false) return true;
+    const seen = Date.parse(r.meta?.lastObservedAt);
+    return Number.isFinite(seen) && Date.now() - seen > REALTIME_FRESH_MS;
+  });
   const ext = externalScore(records), heur = heuristics(raw);
   const score = Math.min(ext.score + heur.score, 100);
   return {
-    ...base, verdict: verdictOf(records.length > 0, score), score,
+    ...base, verdict: historyOnly ? 'Suspicious' : verdictOf(records.length > 0, score), score, historyOnly,
     externalScore: ext.score, heuristicScore: heur.score,
+    lastObservedAt: records.map(r => Date.parse(r.meta?.lastObservedAt) || 0).reduce((a,b) => Math.max(a,b), 0) || null,
     sources: [...new Set(records.map(r => r.source))],
     threats: [...new Set(records.map(r => r.meta?.threat).filter(Boolean))],
-    reasons: [...ext.reasons.map(r => ({ ...r, kind: 'external' })), ...heur.reasons.map(r => ({ ...r, kind: 'heuristic' }))]
+    reasons: [...(historyOnly ? [{ points: 0, text: '과거 악성 등록 이력이 있지만 최신 피드에 없거나 7일 이상 재확인되지 않았습니다. 현재 악성 여부는 미확정입니다.', kind: 'history' }] : []),
+      ...ext.reasons.map(r => ({ ...r, kind: 'external' })), ...heur.reasons.map(r => ({ ...r, kind: 'heuristic' }))]
   };
 }
 
@@ -51,14 +58,20 @@ async function performSync(force) {
     const hasData = Object.values(await db.countBySource()).some(n => n > 0);
     let changed = false;
     if (feed.generatedAt !== feedMeta.generatedAt || !hasData) {
-      const bySource = Object.fromEntries(SOURCES.map(n => [n, []]));
-      for (const r of feed.records) bySource[r.source].push({ url: r.url, meta: r.meta });
-      for (const n of SOURCES) await db.replaceSource(n, bySource[n]);   // 피드에 없는 소스는 비운다
+      // 기존 DB 레코드를 삭제하지 않고 변경된 시그니처를 추가/갱신한다.
+      // 서버의 소스별 실패 시 해당 소스의 마지막 데이터는 그대로 남는다.
+      const hasReal = (await db.countBySource());
+      const realCount = Object.entries(hasReal).filter(([key]) => key !== 'Demo').reduce((sum, [, count]) => sum + count, 0);
+      if (!(feed.demoOnly && realCount)) {
+        await db.mergeRecords(feed.records);
+        await db.deactivateMissing(feed.records, feed.sourceStatus, feedMeta.generatedAt);
+      }
+      if (!feed.demoOnly && feed.records.length) await db.clearDemo();
       changed = true;
     }
     await chrome.storage.local.set({ feedMeta: {
       generatedAt: feed.generatedAt, lastAttempt: now, lastSuccess: Date.now(),
-      nextAt: Date.now() + REFRESH_INTERVAL_MS, count: feed.records.length, demoOnly: feed.demoOnly
+      nextAt: Date.now() + REFRESH_INTERVAL_MS, count: feed.records.length, demoOnly: feed.demoOnly, sourceStatus: feed.sourceStatus
     } });
     let ruleError;
     if (changed || feedMeta.ruleError) {
