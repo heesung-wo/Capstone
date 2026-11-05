@@ -131,7 +131,7 @@ export async function phishtank({ phishKey = '', userAgent = '' } = {}) {
 
 // Phishing.Database (MIT 라이선스). 공식 데이터 파일은 phish.co.za 에서 제공한다.
 // 프로젝트가 직접 HTTP 상태를 점검해 분류한 "ACTIVE(또는 아직 활성일 수 있는)" 링크 목록이다.
-export const PHISHING_DB_URL = 'https://phish.co.za/latest/phishing-links-ACTIVE.txt';
+export const PHISHING_DB_URL = 'https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-links-ACTIVE.txt';
 export async function phishingDatabase({ userAgent = '' } = {}) {
   const response = await getResponse(PHISHING_DB_URL, userAgent ? { headers: { 'User-Agent': userAgent } } : {});
   const text = await response.text();
