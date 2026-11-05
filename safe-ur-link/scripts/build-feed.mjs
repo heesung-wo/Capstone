@@ -46,7 +46,7 @@ export function defaultCollectors(env = {}) {
     URLhaus: () => urlhaus({ authKey: env.ABUSE_CH_AUTH_KEY || '' }),
     ThreatFox: () => threatfox({ authKey: env.ABUSE_CH_AUTH_KEY || '' }),
     PhishTank: () => phishtank({
-      phishKey: env.PHISHTANK_KEY || '',
+      phishKey: '',
       userAgent: env.PHISHTANK_USER_AGENT || 'SafeURLinkFeedBuilder'
     }),
     PhishingDB: () => phishingDatabase({ userAgent: env.FEED_USER_AGENT || 'SafeURLinkFeedBuilder (+https://github.com/heesung-wo/Capstone)' })
