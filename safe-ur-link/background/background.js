@@ -1,23 +1,34 @@
-import { normalizeUrl, hostOf, heuristics, externalScore, verdictOf } from '../core/common.js';
+import { normalizeUrl, hostOf } from '../core/common.js';
+import { evaluateUrl } from '../core/scan.js';
 import * as db from '../core/db.js';
 import { SIGNATURE_FEED_URL, REFRESH_INTERVAL_MS } from '../core/config.js';
 import { downloadFeed } from '../core/remote-feed.js';
-import { buildProtectionRules, hostMatches, DEMO_SIGNATURES, sessionAllowCondition, REALTIME_FRESH_MS } from '../core/dnr.js';
+import { buildProtectionRules, hostMatches, DEMO_SIGNATURES, sessionAllowCondition } from '../core/dnr.js';
+import { registerContextMenu, targetFromContext, resultPageUrl } from '../core/context-menu.js';
 
 const DEFAULTS = { realtime: true, allow: [], block: [] };
 const RETRY_MS = 60 * 60_000, MANUAL_COOLDOWN_MS = 60_000;
 // 다운로드된 악성 시그니처는 block, 사용자 차단 도메인만 redirect (Chrome 121+ 총 30,000개 한도).
 const getSettings = async () => ({ ...DEFAULTS, ...(await chrome.storage.local.get(Object.keys(DEFAULTS))) });
 const WARNING_PAGE = 'pages/warning/warning.html';
+let registeringMenu;
+function ensureContextMenu() {
+  if (!registeringMenu) {
+    registeringMenu = registerContextMenu(chrome).finally(() => { registeringMenu = undefined; });
+  }
+  return registeringMenu;
+}
 
 // ── URL 검사: 정규화 → 사용자 목록 → 로컬 DB → 외부 평가 → 휴리스틱 → 판정
 export async function check(raw) {
   const url = normalizeUrl(raw);
   if (!url) return { error: 'http/https URL만 검사할 수 있습니다.' };
   const host = hostOf(url), s = await getSettings();
-  const base = { url, host, checkedAt: Date.now() };
-  if (s.allow.some(entry => hostMatches(host, entry))) return { ...base, verdict: 'No Threat Detected', score: 0, userList: 'allow', sources: [], reasons: [{ points: 0, text: '사용자 허용 목록에 등록된 도메인입니다' }] };
-  if (s.block.some(entry => hostMatches(host, entry))) return { ...base, verdict: 'Malicious', score: 100, userList: 'block', sources: [], reasons: [{ points: 0, text: '사용자 차단 목록에 등록된 도메인입니다' }] };
+  // 사용자 목록이 우선하는 기존 정책 유지. 목록에 있으면 IndexedDB 접근 불필요.
+  if (s.allow.some(entry => hostMatches(host, entry)) ||
+      s.block.some(entry => hostMatches(host, entry))) {
+    return evaluateUrl(raw, [], s);
+  }
 
   const records = await db.lookup(url);
   if (DEMO_SIGNATURES.includes(url) && !records.length) {
@@ -25,22 +36,7 @@ export async function check(raw) {
     const counts = await db.countBySource();
     if (!Object.values(counts).some(n => n > 0)) records.push({ source: 'Demo', url, meta: {} });
   }
-  const historyOnly = records.length > 0 && records.every(r => {
-    if (r.meta?.active === false) return true;
-    const seen = Date.parse(r.meta?.lastObservedAt);
-    return Number.isFinite(seen) && Date.now() - seen > REALTIME_FRESH_MS;
-  });
-  const ext = externalScore(records), heur = heuristics(raw);
-  const score = Math.min(ext.score + heur.score, 100);
-  return {
-    ...base, verdict: historyOnly ? 'Suspicious' : verdictOf(records.length > 0, score), score, historyOnly,
-    externalScore: ext.score, heuristicScore: heur.score,
-    lastObservedAt: records.map(r => Date.parse(r.meta?.lastObservedAt) || 0).reduce((a,b) => Math.max(a,b), 0) || null,
-    sources: [...new Set(records.map(r => r.source))],
-    threats: [...new Set(records.map(r => r.meta?.threat).filter(Boolean))],
-    reasons: [...(historyOnly ? [{ points: 0, text: '과거 악성 등록 이력이 있지만 최신 피드에 없거나 7일 이상 재확인되지 않았습니다. 현재 악성 여부는 미확정입니다.', kind: 'history' }] : []),
-      ...ext.reasons.map(r => ({ ...r, kind: 'external' })), ...heur.reasons.map(r => ({ ...r, kind: 'heuristic' }))]
-  };
+  return evaluateUrl(raw, records, s);
 }
 
 // ── 시그니처 동기화: 개발자가 GitHub Pages에 공개한 signatures.json 하나만 내려받는다.
@@ -133,20 +129,25 @@ chrome.runtime.onInstalled.addListener(() => {
   // 이전 버전(사용자가 API 키를 직접 입력)에서 저장된 키와 상태를 제거한다.
   chrome.storage.local.remove(['authKey', 'phishKey', 'feedState', 'syncStatus']);
   ensureAlarm();
-  chrome.contextMenus.create({ id: 'check', title: 'SafeURLink로 검사', contexts: ['link', 'selection'] });
+  ensureContextMenu().catch(console.error);
   rebuildRules().catch(console.error);
   sync();
 });
-chrome.runtime.onStartup.addListener(() => { ensureAlarm(); rebuildRules().catch(console.error); sync(); });
+chrome.runtime.onStartup.addListener(() => {
+  ensureAlarm();
+  ensureContextMenu().catch(console.error); // 메뉴가 누락되었어도 브라우저 시작 시 복구
+  rebuildRules().catch(console.error);
+  sync();
+});
 chrome.alarms.onAlarm.addListener(a => a.name === 'sync' && sync());
 
-chrome.contextMenus.onClicked.addListener(async info => {
-  const r = await check(info.linkUrl || info.selectionText);
-  const labels = { Malicious: '악성 URL', Suspicious: '주의 필요', 'No Threat Detected': '위협 미탐지' };
-  chrome.notifications.create({
-    type: 'basic', iconUrl: 'assets/icons/128.png', title: r.error ? 'SafeURLink' : `${labels[r.verdict]} · 위험 점수 ${r.score}/100`,
-    message: r.error || (r.reasons[0]?.text || '탐지된 위험 요소가 없습니다. (안전을 보증하지는 않습니다)')
-  });
+chrome.contextMenus.onClicked.addListener((info) => {
+  const target = targetFromContext(info);
+  if (!target) return;
+  // 선택 URL과 링크 목적지를 메뉴별로 명확히 분리해 전달한다.
+  // 결과 페이지만 열고 위험 URL로 직접 이동하지 않는다.
+  chrome.tabs.create({ url: resultPageUrl(chrome.runtime, target) })
+    .catch(e => console.error('SafeURLink 우클릭 검사 결과 탭 열기 실패:', e));
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {

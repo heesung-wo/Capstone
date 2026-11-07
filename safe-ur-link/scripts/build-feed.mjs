@@ -198,13 +198,17 @@ async function main() {
   const feed = await buildFeed(process.env, { previousFeed, log: m => console.log(m) });
   const dir = fileURLToPath(new URL('../public/', import.meta.url));
   await mkdir(dir, { recursive: true });
+  // index.html은 시그니처 직접 검사 웹사이트이므로 덮어쓰지 않는다.
+  // 제3자 데이터 라이선스 고지는 독립 페이지로 배포한다.
   const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const notices = (feed.notices || []).map(n =>
     `<li><a href="${esc(n.url)}">${esc(n.name)}</a> — ${esc(n.license)}. ${esc(n.copyright)}</li>`).join('');
-  await writeFile(path.join(dir, 'index.html'),
-    '<!doctype html><meta charset="utf-8"><title>SafeURLink signatures</title>'
-    + '<p>signatures.json 만 제공하는 공개 피드입니다.</p>'
-    + (notices ? `<h2>Third-party data notices</h2><ul>${notices}</ul>` : ''));
+  await writeFile(path.join(dir, 'notices.html'),
+    '<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+    + '<title>SafeURLink 데이터 출처·라이선스</title><style>body{max-width:800px;margin:60px auto;padding:0 24px;font-family:system-ui,sans-serif;line-height:1.8;background:#0b1826;color:#e5f2f5}a{color:#63e1c3}li{margin:12px 0}</style>'
+    + '<p><a href="./">← URL 검사 화면</a></p><h1>제3자 데이터 출처·라이선스</h1>'
+    + (notices ? `<ul>${notices}</ul>` : '<p>이번 피드에 별도 라이선스 고지가 필요한 외부 출처가 포함되지 않았습니다.</p>')
+    + '</html>');
   const json = JSON.stringify(feed);
   await writeFile(path.join(dir, 'signatures.json'), json);
   console.log(`완료: ${feed.signatures.length.toLocaleString()}건, ${(Buffer.byteLength(json) / 1048576).toFixed(1)}MB → public/signatures.json`);

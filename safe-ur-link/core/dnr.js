@@ -1,6 +1,7 @@
 // SafeURLink의 실시간 보호용 DNR 규칙 생성기.
 // 실제 네트워크 차단은 service worker가 아니라 브라우저의 DNR 엔진에서 수행한다.
-import { normalizeUrl } from './common.js';
+import { normalizeUrl, REALTIME_FRESH_MS } from './common.js';
+export { REALTIME_FRESH_MS } from './common.js';
 
 // Chrome 121+ : 동적 규칙 전체 30,000개(안전한 block/allow 포함).
 // redirect는 이 전체 한도 안에서 별도로 최대 5,000개.
@@ -16,7 +17,6 @@ export const REALTIME_SOURCE_LIMITS = Object.freeze({
 });
 export const MAX_BLOCK_HOSTS = 300;
 // 마지막 갱신이 너무 오래된 시그니처는 수동 검사 이력에만 남긴다.
-export const REALTIME_FRESH_MS = 7 * 24 * 60 * 60_000;
 export const DEMO_SIGNATURES = ['https://malware.test/demo', 'https://phishing.test/login'];
 const MAIN_FRAME = ['main_frame'];
 const escapeRegex = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

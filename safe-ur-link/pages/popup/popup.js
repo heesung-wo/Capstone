@@ -1,44 +1,77 @@
 import { resultHTML } from '../../shared/render.js';
+
 const $ = id => document.getElementById(id);
+const input = $('u');
+const goButton = $('go');
+const tabButton = $('tab');
+const output = $('out');
+
 async function run(url) {
-  $('go').disabled = $('tab').disabled = true; $('out').textContent = '검사 중…';
-  const r = await chrome.runtime.sendMessage({ type: 'check', url });
-  $('out').innerHTML = `<p class="muted break">${url.replace(/</g, '&lt;')}</p>` + resultHTML(r);
-  $('go').disabled = $('tab').disabled = false;
+  goButton.disabled = tabButton.disabled = true;
+  output.textContent = '검사 중…';
+
+  try {
+    const result = await chrome.runtime.sendMessage({ type: 'check', url });
+    output.innerHTML = `<p class="muted break">${url.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</p>` + resultHTML(result);
+  } catch (error) {
+    console.error('URL 검사 실패:', error);
+    output.textContent = 'URL 검사 중 오류가 발생했습니다. 다시 시도해 주세요.';
+  } finally {
+    goButton.disabled = tabButton.disabled = false;
+    // 검사 버튼을 클릭한 뒤에도 곧바로 주소를 수정할 수 있도록 편집 포커스 복구.
+    input.focus();
+  }
 }
-$('go').onclick = () => $('u').value.trim() && run($('u').value.trim());
-$('u').onkeydown = e => e.key === 'Enter' && $('go').click();
-$('tab').onclick = async () => {
-  const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (t?.url) { $('u').value = t.url; run(t.url); }
-};
-$('opt').onclick = () => chrome.runtime.openOptionsPage();
-chrome.runtime.sendMessage({ type: 'status' }).then(s => {
-  const n = Object.values(s.counts || {}).reduce((a, b) => a + b, 0);
-  $('st').textContent = n ? `시그니처 ${n.toLocaleString()}건` : '시그니처 DB가 비어 있습니다 — 설정에서 지금 업데이트를 눌러주세요';
+
+goButton.addEventListener('click', () => {
+  const url = input.value.trim();
+  if (url) void run(url);
+  else input.focus();
 });
 
-// Ctrl+V / Cmd+V 붙여넣기 지원: 기본 붙여넣기가 막히는 환경에서도 클립보드를 직접 읽어 입력창에 넣는다
-const input = $('u');
-input.focus();
-async function pasteFromClipboard() {
-  try {
-    const text = (await navigator.clipboard.readText()).trim();
-    if (!text) return;
-    input.setRangeText(text, input.selectionStart, input.selectionEnd, 'end');
-    return true;
-  } catch { return false; }
-}
-input.addEventListener('keydown', async e => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
-    e.preventDefault();
-    if (await pasteFromClipboard() && /^\S+$/.test(input.value.trim())) $('go').click();
+// Enter만 별도 처리한다. Backspace, Delete, Space, 방향키, Ctrl+V/Z/X/C 등은
+// 가로채지 않고 <input>의 브라우저 기본 편집 기능에 맡긴다.
+input.addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.isComposing && !event.repeat) {
+    event.preventDefault();
+    goButton.click();
   }
 });
-input.addEventListener('paste', e => {           // 마우스 우클릭 > 붙여넣기 등
-  e.preventDefault();
-  const text = (e.clipboardData?.getData('text') || '').trim();
-  if (!text) return;
-  input.setRangeText(text, input.selectionStart, input.selectionEnd, 'end');
-  if (/^\S+$/.test(input.value.trim())) $('go').click();
+
+tabButton.addEventListener('click', async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.url) {
+      input.value = tab.url;
+      await run(tab.url);
+    } else input.focus();
+  } catch (error) {
+    console.error('현재 탭 조회 실패:', error);
+    output.textContent = '현재 탭 URL을 불러오지 못했습니다.';
+    input.focus();
+  }
 });
+
+$('opt').addEventListener('click', () => chrome.runtime.openOptionsPage());
+
+chrome.runtime.sendMessage({ type: 'status' }).then(status => {
+  const count = Object.values(status.counts || {}).reduce((sum, value) => sum + value, 0);
+  $('st').textContent = count
+    ? `시그니처 ${count.toLocaleString()}건`
+    : '시그니처 DB가 비어 있습니다 — 설정에서 지금 업데이트를 눌러주세요';
+}).catch(() => {
+  $('st').textContent = '시그니처 상태를 불러오지 못했습니다.';
+});
+
+// 입력창이 활성화된 경우 Ctrl+A / Cmd+A는 브라우저 기본 동작을 그대로 사용한다.
+// 검사 버튼 등 다른 요소에 포커스가 있을 때만 URL 입력창을 선택한다.
+document.addEventListener('keydown', event => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'a') return;
+  const target = event.target;
+  if (target?.isContentEditable || ['INPUT', 'TEXTAREA'].includes(target?.tagName)) return;
+  event.preventDefault();
+  input.focus();
+  input.select();
+});
+
+input.focus();

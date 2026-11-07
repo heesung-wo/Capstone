@@ -1,6 +1,66 @@
-# SafeURLink (v0.6.2 · 누적 시그니처 이력 보존 / 소스별 실패 복구)
+# SafeURLink (v0.6.6 · URL 입력창 기본 편집 기능 복원)
 
 Chrome / Whale MV3 확장 프로그램. 알려진 악성 URL을 접속 전에 차단하고, 휴리스틱으로 위험도를 평가합니다.
+
+## 추가 기능: 시그니처 공유 웹사이트 (웹 검사기)
+
+**기존 확장 프로그램과 같은 `signatures.json` + 동일한 `core/scan.js` 판정 엔진**을 사용해 웹사이트에서 URL을 직접 검사합니다. 원래 ZIP에 포함된 시그니처 JSON은 수정하지 않았습니다.
+
+- **배포 주소**: <https://heesung-wo.github.io/Capstone/> (해당 GitHub 저장소에서 Actions가 정상 배포된 이후)
+- **웹사이트 소스**: `public/index.html`, `public/assets/css/site.css`, `public/assets/js/{site,scan-worker}.js`
+- **공통 검사 엔진**: `core/common.js`, `core/scan.js`, `core/remote-feed.js`, `shared/render.js` — 확장 프로그램과 웹사이트가 같은 판정 정책을 사용
+- **피드**: 웹사이트는 같은 경로의 `./signatures.json`을 읽습니다. 별도의 API 키나 서버가 필요하지 않습니다. 검사할 URL로 직접 HTTP 요청을 보내지 않습니다.
+- **대용량 대응**: 웹 워커에서 JSON을 검증·인덱싱하여 화면 응답성을 유지합니다. 업데이트 실패 시 이미 로드한 이전 피드는 메모리에서 유지합니다.
+- **데모 상태**: 이 ZIP의 `public/signatures.json`에는 `.test` URL 두 개만 있습니다. 실제 DB가 GitHub Actions로 배포되어야 실제 위협 피드로 검사할 수 있습니다.
+- **기존 확장 프로그램과 차이**: 사용자 개인의 허용/차단 목록 및 브라우저별 IndexedDB 내용은 웹사이트와 자동으로 공유되지 않습니다. 동일한 공개 시그니처를 바탕으로 한 **수동 검사**만 수행하며, 웹사이트 자체가 페이지 탐색을 차단하는 기능은 아닙니다.
+
+### 로컬에서 실행
+
+프로젝트의 `safe-ur-link/` 폴더에서 다음 명령을 실행합니다.
+
+```bash
+npm run stage:site
+python -m http.server 8000 --directory public
+```
+
+브라우저에서 `http://localhost:8000/`을 열고 `https://phishing.test/login`, `http://malware.test/demo`로 테스트합니다. `index.html` 파일을 `file://`로 직접 열면 워커·JSON 로딩이 제한될 수 있습니다.
+
+### GitHub Pages 배포
+
+`.github/workflows/update-signatures.yml`은 기존 시그니처 수집 뒤 `npm run stage:site`로 **공통 검사 모듈을 `public/core/`, `public/shared/`에 복사**하고 `public/` 전체를 배포합니다. `scripts/build-feed.mjs`는 더 이상 검사 웹사이트의 `index.html`을 시그니처 안내 페이지로 덮어쓰지 않고, 데이터 출처 고지를 `notices.html`로 생성합니다.
+
+기존 저장소의 Actions 비밀 키, `PUBLISH_*`, 재배포 허가 및 Pages 설정은 **그대로 유지**해야 합니다. 기존 운영용 워크플로의 값을 ZIP의 예시 설정으로 무작정 덮어쓰지 마세요. `public/`, `core/`, `shared/`, `scripts/` 변경도 워크플로 배포 트리거에 반영했습니다.
+
+## v0.6.6 URL 입력창 편집 개선
+
+- **Backspace, Delete, Space, 방향키, Home/End, 일반 타이핑** 등 입력창 기본 편집 동작을 브라우저에 맡깁니다.
+- **Ctrl+A / Cmd+A** 는 입력창에 포커스가 있으면 네이티브 전체 선택을 수행하며, 검사 버튼 등에 포커스가 있을 때도 입력창 전체 선택이 가능하게 유지합니다.
+- **Ctrl+V / Cmd+V, 마우스 메뉴 붙여넣기** 는 브라우저 기본 붙여넣기를 사용합니다. 비표준 `clipboard.readText()` 처리, 붙여넣기 후 자동 검사 및 `preventDefault()`를 제거했습니다. **검사는 Enter 또는 검사 버튼**으로 실행합니다.
+- URL 검사 성공/실패 후 입력창에 포커스를 되돌려 바로 수정할 수 있습니다. 사용하지 않게 된 `clipboardRead` 권한을 제거했습니다.
+- **기존 기능 유지:** 선택한 URL 텍스트만 검사하는 우클릭 메뉴, 누적 DB, DNR 실시간 보호, GitHub Actions 워크플로는 변경하지 않았습니다.
+- **적용:** 기존 폴더를 덮어쓰고 Chrome/Whale 확장 프로그램 관리 화면에서 새로고침(↻). 확장 프로그램을 삭제하면 로컬 DB에 영향이 있을 수 있으니 기존 설치 경로를 유지하세요. GitHub Actions 재배포는 필요 없습니다.
+
+## 이전 v0.6.5 변경 이력
+
+
+Chrome / Whale MV3 확장 프로그램. 알려진 악성 URL을 접속 전에 차단하고, 휴리스틱으로 위험도를 평가합니다.
+
+## v0.6.5 우클릭 메뉴 간소화 (이전 기능 유지)
+
+- **우클릭 검사:** `SafeURLink: 선택한 URL 텍스트 검사` 메뉴 하나만 제공합니다. 드래그해 선택한 문자열(`selectionText`)만 전달하며, 하이퍼링크의 실제 주소(`linkUrl`)나 페이지 URL(`pageUrl`)로 대체하지 않습니다.
+- **제거:** `SafeURLink: 링크의 실제 주소 검사` 메뉴(`check-link`)를 삭제했습니다. 설치·업데이트·브라우저 시작 시 기존 메뉴를 초기화하고 선택 검사 메뉴만 등록합니다.
+- **URL 형식 검증:** 일반 문구를 드래그한 경우 잘못된 URL이라고 안내합니다.
+- **직접 검사:** `Ctrl+A` / `Cmd+A` 기능은 유지합니다.
+- **그 외 기능:** 누적 시그니처 DB, 시그니처 동기화, 실시간 보호, GitHub Actions 워크플로는 변경하지 않았습니다.
+
+### 기존 설치본 업데이트
+
+1. **기존 `safe-ur-link/` 폴더에 패치 파일을 덮어씁니다.** 확장 프로그램을 삭제하지 마세요. 기존 확장 ID와 로컬 DB를 유지하기 위해 같은 경로에서 업데이트하는 것이 좋습니다.
+2. Chrome의 `chrome://extensions` 또는 Whale 확장 프로그램 관리 화면에서 SafeURLink **새로고침(↻)** 을 누릅니다.
+3. 일반 웹페이지에서 URL 문자열을 드래그해 우클릭한 다음 `SafeURLink: 선택한 URL 텍스트 검사`를 누릅니다. 결과 탭에 선택한 URL만 표시되는지 확인하세요.
+4. 실제 링크 주소 검사 메뉴가 사라졌는지도 확인하세요. 메뉴가 그대로 보이면 확장 프로그램을 새로고침하고 브라우저도 재시작해 보세요.
+
+> GitHub Actions를 다시 배포할 필요는 없습니다. 워크플로의 기존 `PUBLISH_*` / `REDISTRIBUTION_CONFIRMED` 설정은 변경하지 마세요.
 
 ## 구조 (API 키가 사용자에게 노출되지 않는 방식)
 
@@ -39,9 +99,9 @@ Chrome / Whale MV3 확장 프로그램. 알려진 악성 URL을 접속 전에 �
 
 > **PhishTank 404가 계속 발생한다면:** `PHISHTANK_KEY`가 공식 피드 다운로드에 유효한지 확인하고 `PHISHTANK_USER_AGENT` 변수를 `phishtank/사용자아이디`처럼 식별 가능하게 입력하세요. 익명 공개 피드는 일일 다운로드 횟수 제한을 받을 수 있습니다.
 
-> **부분 실패 시 보존 정책(v0.6.2):** 워크플로 기본 `OPTIONAL_SOURCES: 'PhishingDB,PhishTank'`. 선택 소스에서 수집 실패가 발생해도 이전 공개 피드에 있던 해당 소스 기록을 **그대로 유지**하고, 다른 성공한 소스만 갱신합니다. 이전 데이터 자체가 없으면 `unavailable`로 표시합니다. 필수 소스 실패나 전체 소스 실패는 배포하지 않습니다.
+> **부분 실패 시 보존 정책(v0.6.2 이후 유지):** 워크플로 기본 `OPTIONAL_SOURCES: 'PhishingDB,PhishTank'`. 선택 소스에서 수집 실패가 발생해도 이전 공개 피드에 있던 해당 소스 기록을 **그대로 유지**하고, 다른 성공한 소스만 갱신합니다. 이전 데이터 자체가 없으면 `unavailable`로 표시합니다. 필수 소스 실패나 전체 소스 실패는 배포하지 않습니다.
 
-> **기존 GitHub Actions 설정 유지:** 이 ZIP에는 공개 설정 예시가 `false`인 `.github/workflows/update-signatures.yml`이 함께 들어 있습니다. GitHub 저장소에서 이미 `PUBLISH_*` / `REDISTRIBUTION_CONFIRMED`를 `true`로 변경해 운영 중이라면, 이 파일을 그대로 덮어써서 다시 `false`로 만들지 마세요. 이번 버전은 수집 상한 삭제와 DNR 우선 선정을 위해 `scripts/build-feed.mjs`와 `core/dnr.js` 등을 변경합니다. GitHub의 기존 워크플로 활성화 설정을 보존해야 합니다.
+> **기존 GitHub Actions 설정 유지:** 이 ZIP에는 공개 설정 예시가 `false`인 `.github/workflows/update-signatures.yml`이 함께 들어 있습니다. GitHub 저장소에서 이미 `PUBLISH_*` / `REDISTRIBUTION_CONFIRMED`를 `true`로 변경해 운영 중이라면, 이 파일을 그대로 덮어써서 다시 `false`로 만들지 마세요. v0.6.4의 우클릭 수정은 수집 스크립트와 GitHub Actions 설정을 변경하지 않습니다. GitHub의 기존 워크플로 활성화 설정을 보존해야 합니다.
 
 ## 확장 프로그램 설치 (개발자 모드)
 
@@ -156,7 +216,7 @@ Capstone/
     │   ├── feeds.js                 # 원본 API 수집기 (Actions 전용)
     │   ├── common.js                # 위험도 계산
     │   └── db.js                    # IndexedDB
-    ├── pages/{options,popup,warning}/
+    ├── pages/{options,popup,result,warning}/
     ├── assets/{css,icons}/
     ├── shared/render.js
     └── tests/

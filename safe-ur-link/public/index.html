@@ -1,1 +1,73 @@
-<!doctype html><html lang="ko"><meta charset="utf-8"><title>Safe UR Link 시그니처 배포</title><h1>Safe UR Link</h1><p>확장 프로그램에서 사용하는 시그니처 JSON 배포 사이트입니다.</p><p>제3자 위협 데이터 재배포는 제공자 약관과 필요한 허가를 확인한 후에만 사용하세요.</p>
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#091521">
+  <meta name="description" content="SafeURLink - 공개 시그니처 DB와 URL 구조 분석을 이용한 악성 URL 직접 검사 서비스">
+  <title>SafeURLink | 악성 URL 직접 검사</title>
+  <link rel="stylesheet" href="./assets/css/site.css">
+  <script type="module" src="./assets/js/site.js"></script>
+</head>
+<body>
+  <div class="page-glow" aria-hidden="true"></div>
+  <div class="layout">
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="SafeURLink 홈">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 20 5.5v6.1c0 5.2-3.4 8.5-8 10.4C7.4 20.1 4 16.8 4 11.6V5.5L12 2Z"/><path d="m8.5 12.1 2.3 2.4 4.8-5"/></svg>
+        </span>
+        <span class="brand-name">Safe<span>UR</span>Link</span>
+      </a>
+      <div class="top-actions">
+        <span class="top-caption">WEB SCANNER</span>
+        <span id="healthBadge" class="health-badge"><span class="status-dot"></span><span id="healthText">데이터 연결 중</span></span>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero-grid" aria-labelledby="heroTitle">
+        <div class="hero-copy">
+          <div class="eyebrow"><span class="eyebrow-line"></span> REAL-TIME THREAT INTELLIGENCE</div>
+          <h1 id="heroTitle">의심스러운 링크,<br><span class="gradient-text">열기 전에 확인하세요.</span></h1>
+          <p class="hero-description">확장 프로그램에서 사용하는 <strong>동일한 악성 URL 시그니처</strong>를 바탕으로 위험 여부를 검사합니다. 주소를 입력하면 위협 탐지 근거와 위험 점수를 보여줍니다.</p>
+
+          <div class="scanner-card">
+            <div class="card-heading"><span class="heading-icon" aria-hidden="true">⌁</span><span>URL 보안 검사</span><span class="mini-label">SIGNATURE SCAN</span></div>
+            <form id="scanForm" novalidate>
+              <label class="input-label" for="urlInput">검사할 웹사이트 주소</label>
+              <div class="search-row">
+                <div class="input-wrap"><span class="link-symbol" aria-hidden="true">↗</span><input id="urlInput" name="url" type="text" inputmode="url" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="https://example.com" aria-describedby="inputHelp" required></div>
+                <button class="primary-btn" id="scanButton" type="submit" disabled><span>URL 검사</span><span aria-hidden="true">→</span></button>
+              </div>
+              <p id="inputHelp" class="field-hint">검사 대상 사이트에는 접속하지 않습니다. HTTP/HTTPS 주소만 지원합니다.</p>
+            </form>
+            <div class="quick-row"><span class="quick-label">빠른 테스트</span><button type="button" class="sample-chip" data-sample="https://phishing.test/login">피싱 데모</button><button type="button" class="sample-chip" data-sample="http://malware.test/demo">악성코드 데모</button><button type="button" class="sample-chip" data-sample="https://example.com/">미탐지 예시</button></div>
+          </div>
+        </div>
+
+        <aside class="intel-panel" aria-label="시그니처 데이터 상태">
+          <div class="panel-top"><div class="panel-kicker"><span class="pulse-icon"></span> THREAT INTELLIGENCE</div><span class="panel-version">SAFEURLINK / 0.6.x</span></div>
+          <div class="intel-orb" aria-hidden="true"><div class="orb-ring orb-ring-outer"></div><div class="orb-ring orb-ring-mid"></div><div class="orb-core"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M12 2 20 5.5v6.1c0 5.2-3.4 8.5-8 10.4C7.4 20.1 4 16.8 4 11.6V5.5L12 2Z"/><path d="m8.5 12.1 2.3 2.4 4.8-5"/></svg></div><span class="orbit-pin orbit-pin-one"></span><span class="orbit-pin orbit-pin-two"></span></div>
+          <div class="intel-stats"><div class="stat"><div class="stat-name">로드된 시그니처</div><div class="stat-value" id="signatureCount">—</div></div><div class="stat"><div class="stat-name">데이터 출처</div><div class="stat-value" id="sourceCount">—</div></div></div>
+          <div class="intel-info"><div><span class="info-label">마지막 배포</span><strong id="lastUpdated">연결 중...</strong></div><div><span class="info-label">상태</span><strong id="datasetType">확인 중</strong></div></div>
+          <div class="panel-footer"><span id="syncStatus" aria-live="polite">시그니처를 불러오고 있습니다.</span><button type="button" id="refreshButton" class="refresh-btn" aria-label="시그니처 다시 불러오기" title="시그니처 다시 불러오기">↻</button></div>
+        </aside>
+      </section>
+
+      <section id="resultSection" class="result-section" aria-labelledby="resultHeading" hidden>
+        <div class="section-top"><div><span class="section-eyebrow">ANALYSIS REPORT</span><h2 id="resultHeading">URL 검사 결과</h2></div><span id="resultTime" class="result-time"></span></div>
+        <div class="result-card"><div class="target-heading">검사 대상 URL</div><p id="resultUrl" class="target-url"></p><div id="resultContent" class="scan-output" role="status" aria-live="polite"></div></div>
+      </section>
+
+      <section class="explainer-grid" aria-label="검사 방법 및 유의사항">
+        <div class="explain-card"><div class="explain-num">01</div><h2>시그니처 일치 검사</h2><p>기존 확장 프로그램에 배포되는 <code>signatures.json</code>에서 정규화된 URL이 정확하게 일치하는지 확인합니다. 전체 누적 이력도 검사합니다.</p></div>
+        <div class="explain-card"><div class="explain-num">02</div><h2>위험 요소 분석</h2><p>시그니처 출처 및 검증 상태와 URL 자체의 구조를 함께 평가합니다. 외부 정보 최대 60점, URL 특징 최대 40점을 반영합니다.</p></div>
+        <div class="explain-card"><div class="explain-num">03</div><h2>판정 근거 제공</h2><p>악성 URL, 의심스러운 URL, 위협 미탐지 결과를 구분하고 점수와 세부 근거를 표시합니다. 과거 이력만 존재하면 주의 상태로 안내합니다.</p></div>
+      </section>
+    </main>
+
+    <footer class="footer"><div><strong>SafeURLink</strong><span> · 졸업작품 악성 URL 탐지 서비스</span></div><div class="footer-links"><span>위협 미탐지는 안전을 보증하지 않습니다.</span><a href="./notices.html">제3자 데이터 출처·라이선스</a></div></footer>
+  </div>
+</body>
+</html>

@@ -11,7 +11,7 @@ export function resultHTML(r) {
   return `<div class="${cls}"><div class="verdict"><b>${r.verdict}</b> <span class="muted">${LABEL[r.verdict]}</span>
     <div class="meter" role="img" aria-label="위험 점수 ${r.score}점"><i style="width:${r.score}%"></i></div>
     <div class="muted">위험 점수 ${r.score}/100${r.externalScore != null ? ` (외부 정보 ${r.externalScore}/60 + 휴리스틱 ${r.heuristicScore}/40)` : ''}</div></div>
-    ${r.sources?.length ? `<p class="muted">탐지 출처: ${r.sources.join(', ')}</p>` : ''}
+    ${r.sources?.length ? `<p class="muted">탐지 출처: ${esc(r.sources.join(', '))}</p>` : ''}
     <ul class="reasons">${rs}</ul>${lastObservedNote}${historyNote}${note}</div>`;
 }
 export { esc };
