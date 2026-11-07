@@ -15,7 +15,7 @@ export function hostOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
 }
 
-// 확장 프로그램 실시간 보호 및 웹사이트 수동 검사에서 공통으로 사용하는 이력 기준.
+// 공통 수동 검사와 실시간 보호의 7일 이력 기준을 동일하게 관리합니다.
 export const REALTIME_FRESH_MS = 7 * 24 * 60 * 60_000;
 
 const KEYWORDS = ['login', 'signin', 'verify', 'account', 'password', 'secure', 'update', 'banking', 'confirm', 'wallet'];

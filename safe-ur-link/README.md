@@ -1,35 +1,21 @@
+## 웹사이트 직접 검사 기능 — 원본 확장 프로그램 유지형 통합
+
+이 배포본은 업로드된 기존 SafeURLink 소스를 기준으로 작성했습니다. 확장 프로그램의 팝업, 우클릭, 실시간 보호(DNR), 설정, 로컬 DB, 주기적 수집·갱신 동작은 유지하고 **URL 판정 함수만 `core/scan.js`로 추출**해 웹사이트와 공유합니다. 시그니처는 기존 `public/signatures.json` 하나를 원본으로 사용합니다.
+
+- **확장 프로그램 직접 검사**: `background/background.js`의 `check()` → IndexedDB → `evaluateUrl(raw, records, 사용자 설정)`
+- **웹사이트 직접 검사**: `public/index.html` → 웹 워커 → `web-index.json` 및 `web-shards/*.json`의 해당 URL 레코드 → **같은** `evaluateUrl(raw, records)`
+- **갱신/배포**: 기존 GitHub Actions가 `signatures.json`을 생성한 뒤 `stage:site`, `build:web-index`를 실행하여 같은 배포 시각의 웹용 조회 파일을 함께 게시합니다. 확장 프로그램의 시그니처 URL은 바꾸지 않습니다.
+- **건수 보존**: 웹 분할 인덱스는 기존 JSON의 모든 레코드를 512개 파일 중 하나에 배치하며 **샘플링/상위 N개 제한 없음**. 페이지 첫 로딩은 작은 인덱스만 조회하고, 실제 URL 검사 때 관련 파일만 다운로드합니다.
+- **결과 차이가 날 수 있는 조건**: 확장 프로그램만의 개인 허용·차단 목록, 이전 버전부터 로컬에 누적된 독자적 이력, 피드 동기화 시차가 있으면 판정이 달라질 수 있습니다. 동일한 버전/레코드와 개인 목록 미적용 조건에서 같은 평가 함수를 사용합니다.
+- **검사 실패 정책**: 분할 파일 다운로드나 검증이 실패하면 '검사할 수 없습니다'를 표시하며 'No Threat Detected'로 오인하지 않도록 합니다.
+
+GitHub 배포와 로컬 실행 안내는 `WEB_SCANNER_INTEGRATION.md`에 있습니다.
+
+---
+
 # SafeURLink (v0.6.6 · URL 입력창 기본 편집 기능 복원)
 
 Chrome / Whale MV3 확장 프로그램. 알려진 악성 URL을 접속 전에 차단하고, 휴리스틱으로 위험도를 평가합니다.
-
-## 추가 기능: 시그니처 공유 웹사이트 (웹 검사기)
-
-**기존 확장 프로그램과 같은 `signatures.json` + 동일한 `core/scan.js` 판정 엔진**을 사용해 웹사이트에서 URL을 직접 검사합니다. 원래 ZIP에 포함된 시그니처 JSON은 수정하지 않았습니다.
-
-- **배포 주소**: <https://heesung-wo.github.io/Capstone/> (해당 GitHub 저장소에서 Actions가 정상 배포된 이후)
-- **웹사이트 소스**: `public/index.html`, `public/assets/css/site.css`, `public/assets/js/{site,scan-worker}.js`
-- **공통 검사 엔진**: `core/common.js`, `core/scan.js`, `core/remote-feed.js`, `shared/render.js` — 확장 프로그램과 웹사이트가 같은 판정 정책을 사용
-- **피드**: 웹사이트는 같은 경로의 `./signatures.json`을 읽습니다. 별도의 API 키나 서버가 필요하지 않습니다. 검사할 URL로 직접 HTTP 요청을 보내지 않습니다.
-- **대용량 대응**: 웹 워커에서 JSON을 검증·인덱싱하여 화면 응답성을 유지합니다. 업데이트 실패 시 이미 로드한 이전 피드는 메모리에서 유지합니다.
-- **데모 상태**: 이 ZIP의 `public/signatures.json`에는 `.test` URL 두 개만 있습니다. 실제 DB가 GitHub Actions로 배포되어야 실제 위협 피드로 검사할 수 있습니다.
-- **기존 확장 프로그램과 차이**: 사용자 개인의 허용/차단 목록 및 브라우저별 IndexedDB 내용은 웹사이트와 자동으로 공유되지 않습니다. 동일한 공개 시그니처를 바탕으로 한 **수동 검사**만 수행하며, 웹사이트 자체가 페이지 탐색을 차단하는 기능은 아닙니다.
-
-### 로컬에서 실행
-
-프로젝트의 `safe-ur-link/` 폴더에서 다음 명령을 실행합니다.
-
-```bash
-npm run stage:site
-python -m http.server 8000 --directory public
-```
-
-브라우저에서 `http://localhost:8000/`을 열고 `https://phishing.test/login`, `http://malware.test/demo`로 테스트합니다. `index.html` 파일을 `file://`로 직접 열면 워커·JSON 로딩이 제한될 수 있습니다.
-
-### GitHub Pages 배포
-
-`.github/workflows/update-signatures.yml`은 기존 시그니처 수집 뒤 `npm run stage:site`로 **공통 검사 모듈을 `public/core/`, `public/shared/`에 복사**하고 `public/` 전체를 배포합니다. `scripts/build-feed.mjs`는 더 이상 검사 웹사이트의 `index.html`을 시그니처 안내 페이지로 덮어쓰지 않고, 데이터 출처 고지를 `notices.html`로 생성합니다.
-
-기존 저장소의 Actions 비밀 키, `PUBLISH_*`, 재배포 허가 및 Pages 설정은 **그대로 유지**해야 합니다. 기존 운영용 워크플로의 값을 ZIP의 예시 설정으로 무작정 덮어쓰지 마세요. `public/`, `core/`, `shared/`, `scripts/` 변경도 워크플로 배포 트리거에 반영했습니다.
 
 ## v0.6.6 URL 입력창 편집 개선
 

@@ -7,7 +7,8 @@
   "scripts": {
     "test": "node --test \"tests/*.test.mjs\"",
     "build:feed": "node scripts/build-feed.mjs",
-    "stage:site": "node scripts/stage-site.mjs"
+    "stage:site": "node scripts/stage-site.mjs",
+    "build:web-index": "node scripts/build-web-index.mjs"
   },
   "engines": {
     "node": ">=20"

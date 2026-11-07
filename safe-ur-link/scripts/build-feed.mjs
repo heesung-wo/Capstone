@@ -198,8 +198,6 @@ async function main() {
   const feed = await buildFeed(process.env, { previousFeed, log: m => console.log(m) });
   const dir = fileURLToPath(new URL('../public/', import.meta.url));
   await mkdir(dir, { recursive: true });
-  // index.html은 시그니처 직접 검사 웹사이트이므로 덮어쓰지 않는다.
-  // 제3자 데이터 라이선스 고지는 독립 페이지로 배포한다.
   const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const notices = (feed.notices || []).map(n =>
     `<li><a href="${esc(n.url)}">${esc(n.name)}</a> — ${esc(n.license)}. ${esc(n.copyright)}</li>`).join('');
