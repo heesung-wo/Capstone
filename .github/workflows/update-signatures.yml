@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # UTC 03:17 = KST 12:17, 하루 한 번(예약 작업은 지연될 수 있음)
-    - cron: '17 */6 * * *'
+    - cron: '17 3 * * *'
   push:
     branches: [main]
     paths:
@@ -51,7 +51,7 @@ jobs:
       - name: Collect and build public feed
         env:
           PREVIOUS_FEED_URL: 'https://heesung-wo.github.io/Capstone/signatures.json'
-          ALLOW_FIRST_DEPLOY: 'true'
+          ALLOW_FIRST_DEPLOY: 'false'
           OPTIONAL_SOURCES: 'PhishingDB,PhishTank'
           ABUSE_CH_AUTH_KEY: ${{ secrets.ABUSE_CH_AUTH_KEY }}
           PHISHTANK_KEY: ${{ secrets.PHISHTANK_KEY }}
