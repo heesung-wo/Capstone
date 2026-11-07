@@ -65,8 +65,11 @@ jobs:
           REDISTRIBUTION_CONFIRMED: 'true'
         run: npm run build:feed
 
-      - name: Stage shared scanner modules for website
+      - name: Publish shared direct-scan modules
         run: npm run stage:site
+
+      - name: Build full-coverage web lookup index
+        run: npm run build:web-index
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
