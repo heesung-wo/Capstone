@@ -11,8 +11,6 @@ on:
       - '.github/workflows/update-signatures.yml'
       - 'safe-ur-link/scripts/**'
       - 'safe-ur-link/core/**'
-      - 'safe-ur-link/public/**'
-      - 'safe-ur-link/shared/**'
 
 permissions:
   contents: read
@@ -64,12 +62,6 @@ jobs:
           PUBLISH_PHISHING_DB: 'true'
           REDISTRIBUTION_CONFIRMED: 'true'
         run: npm run build:feed
-
-      - name: Publish shared direct-scan modules
-        run: npm run stage:site
-
-      - name: Build full-coverage web lookup index
-        run: npm run build:web-index
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
