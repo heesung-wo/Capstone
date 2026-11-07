@@ -1,0 +1,14 @@
+{
+  "name": "safeurlink",
+  "version": "0.6.6",
+  "private": true,
+  "type": "module",
+  "description": "SafeURLink 확장 프로그램의 시그니처 피드 빌드/테스트용 (확장 프로그램 자체에는 포함되지 않음)",
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
+    "build:feed": "node scripts/build-feed.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

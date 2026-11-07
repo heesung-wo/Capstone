@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "SafeURLink",
+  "version": "0.6.6",
+  "description": "시그니처 기반 악성 URL 탐지 및 실시간 브라우저 보호",
+  "minimum_chrome_version": "121",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "tabs",
+    "alarms",
+    "contextMenus",
+    "declarativeNetRequest"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "pages/popup/popup.html",
+    "default_title": "SafeURLink"
+  },
+  "options_page": "pages/options/options.html",
+  "icons": {
+    "16": "assets/icons/16.png",
+    "48": "assets/icons/48.png",
+    "128": "assets/icons/128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "pages/warning/warning.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

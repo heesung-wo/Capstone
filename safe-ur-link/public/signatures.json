@@ -1,0 +1,1 @@
+{"schema":1,"generatedAt":"2026-10-31T07:04:18.685Z","sources":[{"name":"Demo","count":2}],"signatures":[{"url":"http://malware.test/demo","source":"Demo","meta":{"verified":false,"online":false,"confidence":0,"threat":"demo"}},{"url":"https://phishing.test/login","source":"Demo","meta":{"verified":false,"online":false,"confidence":0,"threat":"demo"}}]}
